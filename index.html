@@ -10,7 +10,7 @@
 </head>
 <body class="is-onboarding">
 
-  <!-- Экран онбординга (профиля) -->
+  <!-- Экран онбординга (профиль) -->
   <section id="screen-onboarding" class="screen active" aria-label="Онбординг">
     <div class="container">
       <header class="onboarding-header">
@@ -21,32 +21,32 @@
       <form id="onboarding-form" class="onboarding-form">
         <div class="form-group">
           <label for="current-weight">Текущий вес (кг)</label>
-          <input type="number" id="current-weight" name="current-weight" step="0.1" required>
+          <input type="number" id="current-weight" name="current-weight" step="0.1" min="20" required>
         </div>
 
         <div class="form-group">
           <label for="waist">Объем талии (см)</label>
-          <input type="number" id="waist" name="waist" step="0.1" required>
+          <input type="number" id="waist" name="waist" step="0.1" min="30" required>
         </div>
 
         <div class="form-group">
           <label for="hips">Объем бедер (см)</label>
-          <input type="number" id="hips" name="hips" step="0.1" required>
+          <input type="number" id="hips" name="hips" step="0.1" min="30" required>
         </div>
 
         <div class="form-group">
           <label for="glutes">Объем ягодиц (см)</label>
-          <input type="number" id="glutes" name="glutes" step="0.1" required>
+          <input type="number" id="glutes" name="glutes" step="0.1" min="30" required>
         </div>
 
         <div class="form-group">
           <label for="age">Возраст (лет)</label>
-          <input type="number" id="age" name="age" required>
+          <input type="number" id="age" name="age" min="10" max="120" required>
         </div>
 
         <div class="form-group">
           <label for="target-weight">Целевой вес (кг)</label>
-          <input type="number" id="target-weight" name="target-weight" step="0.1" required>
+          <input type="number" id="target-weight" name="target-weight" step="0.1" min="20" required>
         </div>
 
         <button type="submit" class="btn-primary">
@@ -60,15 +60,15 @@
   <section id="screen-home" class="screen" aria-label="Главная">
     <div class="container">
       <header class="screen-header">
-        <time id="current-date">19 октября 2026</time>
-        <h2>Добрый день!</h2>
+        <time id="current-date"></time>
+        <h2 id="greeting">Добрый день!</h2>
       </header>
 
       <div class="kbzhu-card">
         <div class="kbzhu-main">
           <h3>Калории</h3>
           <div class="calorie-progress">
-            <svg class="progress-ring" width="140" height="140">
+            <svg class="progress-ring" width="140" height="140" aria-hidden="true">
               <defs>
                 <linearGradient id="gradient-ring" x1="0%" y1="0%" x2="100%" y2="100%">
                   <stop offset="0%" style="stop-color:#007aff;stop-opacity:1" />
@@ -76,12 +76,12 @@
                 </linearGradient>
               </defs>
               <circle class="progress-ring-bg" cx="70" cy="70" r="60" />
-              <circle class="progress-ring-fill" cx="70" cy="70" r="60" />
+              <circle class="progress-ring-fill" id="ring-fill" cx="70" cy="70" r="60" />
             </svg>
             <div class="calorie-value">
-              <span class="current">1240</span>
+              <span class="current" id="calorie-current">0</span>
               <span class="separator">/</span>
-              <span class="target">1800</span>
+              <span class="target" id="calorie-target">1800</span>
             </div>
           </div>
         </div>
@@ -90,36 +90,36 @@
           <div class="macro-bar">
             <div class="macro-header">
               <span class="macro-name">Белки</span>
-              <span class="macro-values"><strong>45</strong> / 90 г</span>
+              <span class="macro-values"><strong id="protein-consumed">0</strong> / <span id="protein-goal">90</span> г</span>
             </div>
             <div class="progress-bar protein">
-              <div class="progress-bar-fill" style="width: 50%"></div>
+              <div class="progress-bar-fill" id="protein-bar" style="width: 0%"></div>
             </div>
           </div>
 
           <div class="macro-bar">
             <div class="macro-header">
               <span class="macro-name">Жиры</span>
-              <span class="macro-values"><strong>30</strong> / 60 г</span>
+              <span class="macro-values"><strong id="fats-consumed">0</strong> / <span id="fats-goal">60</span> г</span>
             </div>
             <div class="progress-bar fats">
-              <div class="progress-bar-fill" style="width: 50%"></div>
+              <div class="progress-bar-fill" id="fats-bar" style="width: 0%"></div>
             </div>
           </div>
 
           <div class="macro-bar">
             <div class="macro-header">
               <span class="macro-name">Углеводы</span>
-              <span class="macro-values"><strong>120</strong> / 180 г</span>
+              <span class="macro-values"><strong id="carbs-consumed">0</strong> / <span id="carbs-goal">180</span> г</span>
             </div>
             <div class="progress-bar carbs">
-              <div class="progress-bar-fill" style="width: 66.67%"></div>
+              <div class="progress-bar-fill" id="carbs-bar" style="width: 0%"></div>
             </div>
           </div>
         </div>
       </div>
 
-      <button class="btn-add-meal" id="btn-add-meal">
+      <button class="btn-add-meal" id="btn-add-meal" type="button">
         <span class="icon">+</span>
         Добавить прием пищи
       </button>
@@ -130,68 +130,15 @@
   <section id="screen-history" class="screen" aria-label="История">
     <div class="container">
       <header class="screen-header">
+        <time id="history-date"></time>
         <h2>История приемов пищи</h2>
       </header>
 
-      <div class="meal-list">
-        <!-- Пример приема пищи -->
-        <article class="meal-card">
-          <div class="meal-photo">
-            <div class="meal-photo-placeholder">🍽️</div>
-          </div>
-          <div class="meal-info">
-            <h4 class="meal-name">Завтрак</h4>
-            <time class="meal-time">08:30</time>
-            <div class="meal-macros">
-              <span>420 ккал</span>
-              <span>•</span>
-              <span>Б: 20г</span>
-              <span>•</span>
-              <span>Ж: 15г</span>
-              <span>•</span>
-              <span>У: 45г</span>
-            </div>
-          </div>
-        </article>
+      <p class="empty-state hidden" id="history-empty">
+        Сегодня пока нет приемов пищи. Добавьте первый на вкладке «Главная».
+      </p>
 
-        <article class="meal-card">
-          <div class="meal-photo">
-            <div class="meal-photo-placeholder">🥗</div>
-          </div>
-          <div class="meal-info">
-            <h4 class="meal-name">Обед</h4>
-            <time class="meal-time">13:15</time>
-            <div class="meal-macros">
-              <span>620 ккал</span>
-              <span>•</span>
-              <span>Б: 35г</span>
-              <span>•</span>
-              <span>Ж: 20г</span>
-              <span>•</span>
-              <span>У: 55г</span>
-            </div>
-          </div>
-        </article>
-
-        <article class="meal-card">
-          <div class="meal-photo">
-            <div class="meal-photo-placeholder">🍎</div>
-          </div>
-          <div class="meal-info">
-            <h4 class="meal-name">Перекус</h4>
-            <time class="meal-time">16:00</time>
-            <div class="meal-macros">
-              <span>200 ккал</span>
-              <span>•</span>
-              <span>Б: 5г</span>
-              <span>•</span>
-              <span>Ж: 8г</span>
-              <span>•</span>
-              <span>У: 28г</span>
-            </div>
-          </div>
-        </article>
-      </div>
+      <div class="meal-list" id="meal-list"></div>
     </div>
   </section>
 
@@ -205,30 +152,30 @@
       <div class="metrics-grid">
         <div class="metric-card">
           <h4>Текущий вес</h4>
-          <p class="metric-value">68.5 кг</p>
-          <time class="metric-date">Обновлено 15.10.2026</time>
+          <p class="metric-value" id="metric-weight">—</p>
+          <time class="metric-date" id="metric-weight-date">Нет данных</time>
         </div>
 
         <div class="metric-card">
           <h4>Талия</h4>
-          <p class="metric-value">72 см</p>
-          <time class="metric-date">Обновлено 15.10.2026</time>
+          <p class="metric-value" id="metric-waist">—</p>
+          <time class="metric-date" id="metric-waist-date">Нет данных</time>
         </div>
 
         <div class="metric-card">
           <h4>Бедра</h4>
-          <p class="metric-value">95 см</p>
-          <time class="metric-date">Обновлено 15.10.2026</time>
+          <p class="metric-value" id="metric-hips">—</p>
+          <time class="metric-date" id="metric-hips-date">Нет данных</time>
         </div>
 
         <div class="metric-card">
           <h4>Ягодицы</h4>
-          <p class="metric-value">98 см</p>
-          <time class="metric-date">Обновлено 15.10.2026</time>
+          <p class="metric-value" id="metric-glutes">—</p>
+          <time class="metric-date" id="metric-glutes-date">Нет данных</time>
         </div>
       </div>
 
-      <button class="btn-secondary" id="btn-add-metrics">
+      <button class="btn-secondary" id="btn-add-metrics" type="button">
         Внести новые замеры
       </button>
 
@@ -241,24 +188,24 @@
 
   <!-- Нижний таббар -->
   <nav class="tabbar" role="navigation" aria-label="Основная навигация">
-    <button class="tab-item active" data-screen="home" aria-label="Главная">
-      <svg class="tab-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <button class="tab-item active" data-screen="home" aria-label="Главная" type="button">
+      <svg class="tab-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"></path>
         <polyline points="9 22 9 12 15 12 15 22"></polyline>
       </svg>
       <span class="tab-label">Главная</span>
     </button>
 
-    <button class="tab-item" data-screen="history" aria-label="История">
-      <svg class="tab-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <button class="tab-item" data-screen="history" aria-label="История" type="button">
+      <svg class="tab-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <circle cx="12" cy="12" r="10"></circle>
         <polyline points="12 6 12 12 16 14"></polyline>
       </svg>
       <span class="tab-label">История</span>
     </button>
 
-    <button class="tab-item" data-screen="progress" aria-label="Прогресс">
-      <svg class="tab-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+    <button class="tab-item" data-screen="progress" aria-label="Прогресс" type="button">
+      <svg class="tab-icon" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
         <line x1="18" y1="20" x2="18" y2="10"></line>
         <line x1="12" y1="20" x2="12" y2="4"></line>
         <line x1="6" y1="20" x2="6" y2="14"></line>
@@ -269,23 +216,27 @@
 
   <!-- Шторка: добавление приема пищи -->
   <div class="modal" id="modal-add-meal" role="dialog" aria-labelledby="modal-add-meal-title" aria-hidden="true">
-    <div class="modal-backdrop"></div>
+    <div class="modal-backdrop" data-close-modal></div>
     <div class="modal-content">
       <header class="modal-header">
         <h3 id="modal-add-meal-title">Добавить прием пищи</h3>
-        <button class="modal-close" aria-label="Закрыть">×</button>
+        <button class="modal-close" type="button" aria-label="Закрыть" data-close-modal>×</button>
       </header>
-      <form class="modal-form">
+      <form class="modal-form" id="form-meal">
         <div class="form-group">
           <label class="btn-photo-upload">
-            <input type="file" accept="image/*" capture="environment" hidden>
+            <input type="file" id="meal-photo" accept="image/*" capture="environment" hidden>
             <span class="icon">📷</span>
-            <span>Загрузить фото / Сделать снимок</span>
+            <span id="meal-photo-name">Загрузить фото / Сделать снимок</span>
           </label>
         </div>
         <div class="form-group">
+          <label for="meal-name">Название блюда</label>
+          <input type="text" id="meal-name" name="meal-name" placeholder="Например, овсянка с ягодами">
+        </div>
+        <div class="form-group">
           <label for="meal-weight">Вес блюда (г)</label>
-          <input type="number" id="meal-weight" name="meal-weight" step="1" required>
+          <input type="number" id="meal-weight" name="meal-weight" step="1" min="1" required>
         </div>
         <button type="submit" class="btn-primary">Отправить агенту</button>
       </form>
@@ -294,108 +245,34 @@
 
   <!-- Шторка: добавление замеров -->
   <div class="modal" id="modal-add-metrics" role="dialog" aria-labelledby="modal-add-metrics-title" aria-hidden="true">
-    <div class="modal-backdrop"></div>
+    <div class="modal-backdrop" data-close-modal></div>
     <div class="modal-content">
       <header class="modal-header">
         <h3 id="modal-add-metrics-title">Внести новые замеры</h3>
-        <button class="modal-close" aria-label="Закрыть">×</button>
+        <button class="modal-close" type="button" aria-label="Закрыть" data-close-modal>×</button>
       </header>
-      <form class="modal-form">
+      <form class="modal-form" id="form-metrics">
         <div class="form-group">
           <label for="new-weight">Вес (кг)</label>
-          <input type="number" id="new-weight" name="new-weight" step="0.1" required>
+          <input type="number" id="new-weight" name="new-weight" step="0.1" min="20" required>
         </div>
         <div class="form-group">
           <label for="new-waist">Талия (см)</label>
-          <input type="number" id="new-waist" name="new-waist" step="0.1" required>
+          <input type="number" id="new-waist" name="new-waist" step="0.1" min="30" required>
         </div>
         <div class="form-group">
           <label for="new-hips">Бедра (см)</label>
-          <input type="number" id="new-hips" name="new-hips" step="0.1" required>
+          <input type="number" id="new-hips" name="new-hips" step="0.1" min="30" required>
         </div>
         <div class="form-group">
           <label for="new-glutes">Ягодицы (см)</label>
-          <input type="number" id="new-glutes" name="new-glutes" step="0.1" required>
+          <input type="number" id="new-glutes" name="new-glutes" step="0.1" min="30" required>
         </div>
         <button type="submit" class="btn-primary">Сохранить замеры</button>
       </form>
     </div>
   </div>
 
-  <script>
-    // Базовая логика переключения вкладок и модальных окон
-    // (можно расширить для работы с localStorage и API)
-
-    const tabButtons = document.querySelectorAll('.tab-item');
-    const screens = document.querySelectorAll('.screen');
-
-    tabButtons.forEach(btn => {
-      btn.addEventListener('click', () => {
-        const target = btn.dataset.screen;
-        
-        tabButtons.forEach(t => t.classList.remove('active'));
-        btn.classList.add('active');
-
-        screens.forEach(s => {
-          if (s.id === `screen-${target}`) {
-            s.classList.add('active');
-          } else {
-            s.classList.remove('active');
-          }
-        });
-      });
-    });
-
-    // Модальные окна
-    const btnAddMeal = document.getElementById('btn-add-meal');
-    const modalAddMeal = document.getElementById('modal-add-meal');
-    const btnAddMetrics = document.getElementById('btn-add-metrics');
-    const modalAddMetrics = document.getElementById('modal-add-metrics');
-
-    function openModal(modal) {
-      modal.classList.add('open');
-      modal.setAttribute('aria-hidden', 'false');
-    }
-
-    function closeModal(modal) {
-      modal.classList.remove('open');
-      modal.setAttribute('aria-hidden', 'true');
-    }
-
-    btnAddMeal.addEventListener('click', () => openModal(modalAddMeal));
-    btnAddMetrics.addEventListener('click', () => openModal(modalAddMetrics));
-
-    document.querySelectorAll('.modal-close').forEach(btn => {
-      btn.addEventListener('click', (e) => {
-        const modal = e.target.closest('.modal');
-        closeModal(modal);
-      });
-    });
-
-    document.querySelectorAll('.modal-backdrop').forEach(backdrop => {
-      backdrop.addEventListener('click', (e) => {
-        const modal = e.target.closest('.modal');
-        closeModal(modal);
-      });
-    });
-
-    // Проверка наличия данных онбординга (пример)
-    // Если данные есть, скрываем онбординг и показываем главную
-    const hasOnboarded = localStorage.getItem('onboarded');
-    if (hasOnboarded) {
-      document.body.classList.remove('is-onboarding');
-      document.getElementById('screen-onboarding').classList.remove('active');
-      document.getElementById('screen-home').classList.add('active');
-    }
-
-    document.getElementById('onboarding-form').addEventListener('submit', (e) => {
-      e.preventDefault();
-      // Сохраняем данные, помечаем онбординг завершенным
-      localStorage.setItem('onboarded', 'true');
-      document.body.classList.remove('is-onboarding');
-      document.getElementById('screen-onboarding').classList.remove('active');
-      document.getElementById('screen-home').classList.add('active');
-    });
-  </script>
+  <script src="app.js"></script>
 </body>
 </html>
