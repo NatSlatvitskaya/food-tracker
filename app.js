@@ -1,41 +1,53 @@
 /* =========================================================
-   app.js — логика трекера питания
-   Всё хранится в localStorage. Без сборки и зависимостей.
+   app.js — трекер питания с ИИ (OpenRouter)
+   Все данные лежат в localStorage. Без сборки и зависимостей.
    ========================================================= */
 
 'use strict';
 
 /* =========================================================
-   1. КОНСТАНТЫ
+   1. КОНФИГУРАЦИЯ
    ========================================================= */
 
-// Ключи, под которыми данные лежат в localStorage
+// Полный адрес эндпоинта. Просто https://openrouter.ai не отвечает на POST —
+// нужен путь /api/v1/chat/completions
+const API_URL = 'https://openrouter.ai/api/v1/chat/completions';
+const API_MODEL = 'google/gemini-flash-1.5';
+const API_TIMEOUT_MS = 45000;
+
+// Ключ НЕ хранится в коде: он вводится один раз и лежит в localStorage
+const API_KEY_STORAGE = 'tracker.apiKey';
+
+// Ключи localStorage для данных
 const STORAGE_KEYS = {
-  profile: 'tracker.profile', // данные онбординга: возраст, целевой вес и т.п.
-  goals:   'tracker.goals',   // цели КБЖУ
-  metrics: 'tracker.metrics', // история замеров (массив записей, по дате)
-  meals:   'tracker.meals',   // приёмы пищи (массив записей)
+  profile: 'tracker.profile',
+  goals: 'tracker.goals',
+  metrics: 'tracker.metrics',
+  meals: 'tracker.meals',
 };
 
-// Дефолтные цели — временно, пока не подключён ИИ-агент Syntx
+// Резервные цели, если ИИ недоступен
 const DEFAULT_GOALS = { kcal: 1800, protein: 90, fats: 60, carbs: 180 };
 
-// Временная оценка КБЖУ на 100 г блюда — заглушка вместо ответа агента
-const STUB_PER_100G = { kcal: 150, protein: 8, fats: 6, carbs: 16 };
-
-// Длина окружности кольца (r = 60). Совпадает с stroke-dasharray в CSS
+// Длина окружности кольца (r = 60), совпадает с stroke-dasharray в CSS
 const RING_LENGTH = 2 * Math.PI * 60;
 
 const DEFAULT_PHOTO_LABEL = 'Загрузить фото / Сделать снимок';
 
+// Сжатие фото: тяжёлый снимок с камеры (12 МП, ~5 МБ) превращается в ~150 КБ.
+// 1024 px хватает модели, чтобы разглядеть состав блюда.
+const PHOTO_MAX_SIDE = 1024;  // длинная сторона для отправки в ИИ
+const PHOTO_QUALITY = 0.7;    // качество JPEG
+const THUMB_MAX_SIDE = 512;   // длинная сторона для хранения в localStorage
+
 /* =========================================================
-   2. ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+   2. ХЕЛПЕРЫ
    ========================================================= */
 
 /** Короткий доступ к элементу по id */
 const $ = (id) => document.getElementById(id);
 
-/** Создаёт элемент с классом и текстом (textContent — безопасно для пользовательского ввода) */
+/** Создаёт элемент с классом и текстом (textContent — безопасно для ввода) */
 function el(tag, className = '', text = '') {
   const node = document.createElement(tag);
   if (className) node.className = className;
@@ -43,7 +55,7 @@ function el(tag, className = '', text = '') {
   return node;
 }
 
-/** Читает JSON из localStorage. При ошибке возвращает fallback */
+/** Читает JSON из localStorage, при ошибке возвращает fallback */
 function load(key, fallback) {
   try {
     const raw = localStorage.getItem(key);
@@ -54,12 +66,18 @@ function load(key, fallback) {
   }
 }
 
-/** Сохраняет значение в localStorage как JSON */
+/** Сохраняет значение. Переполнение квоты не должно ломать приложение */
 function save(key, value) {
-  localStorage.setItem(key, JSON.stringify(value));
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+    return true;
+  } catch (err) {
+    console.error(`Не удалось сохранить ${key}:`, err);
+    return false;
+  }
 }
 
-/** Дата YYYY-MM-DD по ЛОКАЛЬНОМУ времени пользователя (toISOString даёт UTC, поэтому не используем) */
+/** Дата YYYY-MM-DD по локальному времени (не UTC) */
 function toISODate(date = new Date()) {
   const y = date.getFullYear();
   const m = String(date.getMonth() + 1).padStart(2, '0');
@@ -109,19 +127,52 @@ function sumMeals(meals) {
   );
 }
 
+/** Округление до целого, безопасное для строк и undefined */
+function round(value, fallback = 0) {
+  const n = Number(value);
+  return Number.isFinite(n) ? Math.round(n) : fallback;
+}
+
 /* =========================================================
-   3. СОСТОЯНИЕ
+   3. JSON ОТ МОДЕЛИ
+   ========================================================= */
+
+/**
+ * Модели любят оборачивать JSON в ```json ... ``` и добавлять текст вокруг.
+ * Достаём первый объект {...} и парсим его.
+ */
+function parseModelJson(raw) {
+  if (!raw || typeof raw !== 'string') {
+    throw new Error('Модель вернула пустой ответ');
+  }
+
+  const cleaned = raw
+    .replace(/```json/gi, '')
+    .replace(/```/g, '')
+    .trim();
+
+  const start = cleaned.indexOf('{');
+  const end = cleaned.lastIndexOf('}');
+  if (start === -1 || end === -1 || end < start) {
+    throw new Error('В ответе модели нет JSON');
+  }
+
+  return JSON.parse(cleaned.slice(start, end + 1));
+}
+
+/* =========================================================
+   4. СОСТОЯНИЕ
    ========================================================= */
 
 const state = {
-  profile: null,          // профиль пользователя или null (нет онбординга)
+  profile: null,
   goals: { ...DEFAULT_GOALS },
-  metrics: [],            // замеры: { date, weight, waist, hips, glutes }
-  meals: [],              // приёмы пищи: { id, date, time, name, weight, kcal, protein, fats, carbs }
-  pendingPhotoName: '',   // имя выбранного в форме фото (сам файл в localStorage не сохраняем)
+  metrics: [],
+  meals: [],
+  pendingPhoto: null, // { name, dataUrl } выбранного фото
+  photoTask: null,    // Promise обработки фото (чтобы дождаться его перед отправкой)
 };
 
-/** Загружает все данные из localStorage в state */
 function loadState() {
   state.profile = load(STORAGE_KEYS.profile, null);
   state.goals = load(STORAGE_KEYS.goals, { ...DEFAULT_GOALS });
@@ -129,10 +180,7 @@ function loadState() {
   state.meals = load(STORAGE_KEYS.meals, []);
 }
 
-/**
- * Добавляет замер или заменяет запись за сегодня.
- * Так повторный замер в один день не создаёт дубликатов.
- */
+/** Замер за сегодня заменяет предыдущий, иначе добавляется новый */
 function upsertMetric(entry) {
   const last = state.metrics[state.metrics.length - 1];
   if (last && last.date === entry.date) {
@@ -144,13 +192,299 @@ function upsertMetric(entry) {
 }
 
 /* =========================================================
-   4. НАВИГАЦИЯ (ЭКРАНЫ И ТАББАР)
+   5. КЛЮЧ API
+   ========================================================= */
+
+function getApiKey() {
+  return localStorage.getItem(API_KEY_STORAGE) || '';
+}
+
+/**
+ * Просит пользователя вставить ключ OpenRouter.
+ * Окно создаётся прямо в JS, поэтому index.html менять не нужно.
+ * Возвращает Promise с ключом (или null, если пользователь закрыл окно).
+ */
+function askForApiKey() {
+  return new Promise((resolve) => {
+    const modal = el('div', 'modal');
+    modal.setAttribute('role', 'dialog');
+    modal.setAttribute('aria-modal', 'true');
+
+    const backdrop = el('div', 'modal-backdrop');
+    const content = el('div', 'modal-content');
+    const header = el('header', 'modal-header');
+    const title = el('h3', '', 'Ключ OpenRouter');
+    const closeBtn = el('button', 'modal-close', '×');
+    closeBtn.type = 'button';
+    closeBtn.setAttribute('aria-label', 'Закрыть');
+    header.append(title, closeBtn);
+
+    const form = el('form', 'modal-form');
+
+    const hint = el(
+      'p',
+      'form-hint',
+      'Ключ хранится только в этом браузере (localStorage) и не попадает в код сайта. Получить ключ: openrouter.ai/keys'
+    );
+
+    const group = el('div', 'form-group');
+    const label = el('label', '', 'Ключ API');
+    label.setAttribute('for', 'api-key-input');
+    const input = el('input');
+    input.type = 'password';
+    input.id = 'api-key-input';
+    input.placeholder = 'sk-or-v1-...';
+    input.autocomplete = 'off';
+    group.append(label, input);
+
+    const submit = el('button', 'btn-primary', 'Сохранить ключ');
+    submit.type = 'submit';
+
+    form.append(hint, group, submit);
+    content.append(header, form);
+    modal.append(backdrop, content);
+    document.body.appendChild(modal);
+
+    // Небольшая задержка, чтобы сработала анимация появления
+    requestAnimationFrame(() => modal.classList.add('open'));
+
+    function finish(value) {
+      modal.classList.remove('open');
+      setTimeout(() => modal.remove(), 250);
+      resolve(value);
+    }
+
+    closeBtn.addEventListener('click', () => finish(null));
+    backdrop.addEventListener('click', () => finish(null));
+
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      const key = input.value.trim();
+      if (!key) {
+        input.focus();
+        return;
+      }
+      localStorage.setItem(API_KEY_STORAGE, key);
+      finish(key);
+    });
+
+    setTimeout(() => input.focus(), 100);
+  });
+}
+
+/** Возвращает существующий ключ или просит ввести новый */
+async function ensureApiKey() {
+  const existing = getApiKey();
+  if (existing) return existing;
+  return askForApiKey();
+}
+
+/* =========================================================
+   6. ЗАПРОСЫ К OPENROUTER
    ========================================================= */
 
 /**
- * Показывает экран с нужным именем и подсвечивает кнопку таббара.
- * name: 'onboarding' | 'home' | 'history' | 'progress'
+ * Отправляет сообщения в модель и возвращает текст ответа.
+ * content — либо строка, либо массив частей (для фото).
  */
+async function callModel(content, maxTokens = 500) {
+  const apiKey = await ensureApiKey();
+  if (!apiKey) {
+    throw new Error('Нужен ключ OpenRouter');
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
+
+  let response;
+  try {
+    response = await fetch(API_URL, {
+      method: 'POST',
+      signal: controller.signal,
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        // OpenRouter просит эти два заголовка для статистики, они необязательны
+        'HTTP-Referer': location.origin,
+        'X-Title': 'Food Tracker',
+      },
+      body: JSON.stringify({
+        model: API_MODEL,
+        temperature: 0.2,
+        max_tokens: maxTokens,
+        messages: [{ role: 'user', content }],
+      }),
+    });
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      throw new Error('Модель не ответила за 45 секунд');
+    }
+    throw new Error('Нет связи с OpenRouter. Проверьте интернет.');
+  } finally {
+    clearTimeout(timer);
+  }
+
+  if (!response.ok) {
+    let details = '';
+    try {
+      const data = await response.json();
+      details = data?.error?.message || '';
+    } catch (_) {
+      /* тело не JSON — оставляем пустым */
+    }
+    if (response.status === 401) throw new Error('Ключ отклонён (401). Проверьте ключ');
+    if (response.status === 402) throw new Error('Закончились кредиты OpenRouter (402)');
+    if (response.status === 429) throw new Error('Слишком много запросов (429). Подождите минуту');
+    throw new Error(`Ошибка OpenRouter ${response.status}${details ? `: ${details}` : ''}`);
+  }
+
+  const data = await response.json();
+  const text = data?.choices?.[0]?.message?.content;
+  if (!text) throw new Error('Пустой ответ модели');
+  return text;
+}
+
+/* =========================================================
+   7. ФОТО: ЧТЕНИЕ И СЖАТИЕ
+   ========================================================= */
+
+/** Открывает файл как изображение через object URL (без base64 — меньше памяти) */
+function loadImageFromFile(file) {
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(file);
+    const img = new Image();
+
+    // Страховка от «зависшей» картинки: битый или очень тяжёлый файл
+    const guard = setTimeout(() => {
+      URL.revokeObjectURL(url);
+      reject(new Error('Фото слишком большое или повреждено'));
+    }, 20000);
+
+    img.onload = () => {
+      clearTimeout(guard);
+      URL.revokeObjectURL(url);
+      resolve(img);
+    };
+    img.onerror = () => {
+      clearTimeout(guard);
+      URL.revokeObjectURL(url);
+      reject(new Error('Это не изображение или формат не поддерживается'));
+    };
+    img.src = url;
+  });
+}
+
+/**
+ * Рисует изображение на canvas, уменьшая до maxSide по длинной стороне,
+ * и возвращает JPEG в Base64 нужного качества.
+ *
+ * Зачем canvas: камера Samsung на 12 МП даёт файл 4–8 МБ. Если отправить
+ * его в OpenRouter как есть, base64 раздувает размер ещё на треть,
+ * запрос уходит долго, а модель всё равно не видит больше, чем 1024 px.
+ */
+function compressImage(img, maxSide, quality) {
+  const scale = Math.min(1, maxSide / Math.max(img.width, img.height));
+  const width = Math.max(1, Math.round(img.width * scale));
+  const height = Math.max(1, Math.round(img.height * scale));
+
+  const canvas = document.createElement('canvas');
+  canvas.width = width;
+  canvas.height = height;
+
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return null;
+
+  // Белая подложка: JPEG не хранит прозрачность, иначе PNG уйдёт в чёрный
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, width, height);
+  ctx.imageSmoothingEnabled = true;
+  ctx.imageSmoothingQuality = 'high';
+  ctx.drawImage(img, 0, 0, width, height);
+
+  try {
+    return canvas.toDataURL('image/jpeg', quality);
+  } catch (err) {
+    console.warn('Canvas не смог сжать фото:', err);
+    return null;
+  }
+}
+
+/**
+ * Готовит два варианта одного снимка:
+ *   dataUrl — 1024 px для отправки в ИИ
+ *   thumb   — 512 px для карточки в истории (экономит localStorage)
+ */
+async function preparePhoto(file) {
+  const img = await loadImageFromFile(file);
+
+  const dataUrl = compressImage(img, PHOTO_MAX_SIDE, PHOTO_QUALITY);
+  if (!dataUrl) {
+    throw new Error('Не удалось сжать фото');
+  }
+
+  const thumb = compressImage(img, THUMB_MAX_SIDE, PHOTO_QUALITY) || dataUrl;
+  return { name: file.name, dataUrl, thumb };
+}
+
+/** Размер data URL в килобайтах (для подписи под полем) */
+function dataUrlSizeKb(dataUrl) {
+  return Math.round((dataUrl.length * 0.75) / 1024);
+}
+
+/* =========================================================
+   8. ИНТЕРФЕЙС: КНОПКИ В РЕЖИМЕ ОЖИДАНИЯ
+   ========================================================= */
+
+/**
+ * Переводит кнопку в состояние "ИИ анализирует...".
+ * Возвращает функцию, которая вернёт исходный текст.
+ */
+function setButtonLoading(button, text = 'ИИ анализирует…') {
+  const original = button.textContent;
+  button.disabled = true;
+  button.classList.add('is-loading');
+  button.dataset.originalText = original;
+  button.textContent = '';
+  const spinner = el('span', 'spinner');
+  const label = el('span', '', text);
+  button.append(spinner, label);
+  return () => {
+    button.disabled = false;
+    button.classList.remove('is-loading');
+    button.replaceChildren(document.createTextNode(original));
+  };
+}
+
+/** Короткое всплывающее сообщение внизу экрана */
+function toast(message, kind = 'info') {
+  const node = el('div', `toast toast-${kind}`, message);
+  document.body.appendChild(node);
+  requestAnimationFrame(() => node.classList.add('show'));
+  setTimeout(() => {
+    node.classList.remove('show');
+    setTimeout(() => node.remove(), 300);
+  }, 4000);
+}
+
+/** Показывает текст ошибки внутри формы. Пустая строка — убрать */
+function setFormError(container, message) {
+  let box = container.querySelector('.form-error');
+  if (!message) {
+    if (box) box.remove();
+    return;
+  }
+  if (!box) {
+    box = el('p', 'form-error');
+    container.appendChild(box);
+  }
+  box.textContent = message;
+}
+
+/* =========================================================
+   9. НАВИГАЦИЯ
+   ========================================================= */
+
+/** Показывает экран по имени и подсвечивает кнопку таббара */
 function showScreen(name) {
   document.querySelectorAll('.screen').forEach((section) => {
     section.classList.toggle('active', section.id === `screen-${name}`);
@@ -158,9 +492,9 @@ function showScreen(name) {
   document.querySelectorAll('.tab-item').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.screen === name);
   });
+  window.scrollTo(0, 0);
 }
 
-/** Нажатие на вкладку таббара: переключаем экран и обновляем данные */
 function initTabs() {
   document.querySelectorAll('.tab-item').forEach((btn) => {
     btn.addEventListener('click', () => {
@@ -171,22 +505,19 @@ function initTabs() {
 }
 
 /* =========================================================
-   5. ОНБОРДИНГ
+   10. ОНБОРДИНГ
    ========================================================= */
 
-/** Показывает онбординг и прячет таббар (класс is-onboarding на body) */
 function showOnboarding() {
   document.body.classList.add('is-onboarding');
   showScreen('onboarding');
 }
 
-/** Прячет онбординг, показывает таббар и главную вкладку */
 function hideOnboarding() {
   document.body.classList.remove('is-onboarding');
   showScreen('home');
 }
 
-/** При загрузке решает, что показать: онбординг или главную */
 function initOnboarding() {
   if (state.profile) {
     hideOnboarding();
@@ -196,15 +527,47 @@ function initOnboarding() {
   $('onboarding-form').addEventListener('submit', handleOnboardingSubmit);
 }
 
+/** Промпт для расчёта целей */
+function buildGoalsPrompt(profile) {
+  return [
+    `Пользователь: возраст ${profile.age}, вес ${profile.currentWeight},`,
+    `замеры ${profile.waist}/${profile.hips}/${profile.glutes},`,
+    `цель по весу ${profile.targetWeight}.`,
+    'Рассчитай суточную норму калорий по формуле Миффлина-Сан Жеора',
+    'с безопасным дефицитом 15-20% для плавного похудения. Распредели БЖУ.',
+    'Верни ответ СТРОГО в формате JSON без markdown и без лишних слов:',
+    '{"calories": 1750, "protein": 100, "fat": 58, "carbs": 206}',
+  ].join(' ');
+}
+
+/** Приводит ответ модели к внутреннему виду целей */
+function normalizeGoals(data) {
+  const goals = {
+    kcal: round(data.calories),
+    protein: round(data.protein),
+    fats: round(data.fat ?? data.fats),
+    carbs: round(data.carbs),
+  };
+
+  // Грубая проверка на вменяемость: иначе модель может вернуть нули
+  const valid =
+    goals.kcal >= 800 && goals.kcal <= 6000 &&
+    goals.protein > 0 && goals.fats > 0 && goals.carbs > 0;
+
+  return valid ? goals : null;
+}
+
 /**
- * Обработчик кнопки "Рассчитать цель через ИИ-агента".
- * ВРЕМЕННАЯ версия: ИИ ещё не подключён, поэтому ставим дефолтные цели.
+ * Кнопка "Рассчитать цель через ИИ-агента".
+ * ВРЕМЕННАЯ ЧАСТЬ: при ошибке сети цели остаются дефолтными,
+ * чтобы пользователь не оказался заперт на стартовом экране.
  */
-function handleOnboardingSubmit(event) {
+async function handleOnboardingSubmit(event) {
   event.preventDefault();
+
   const form = event.target;
+  const button = form.querySelector('button[type="submit"]');
   const num = (name) => Number(form.elements[name].value);
-  const today = toISODate();
 
   const profile = {
     currentWeight: num('current-weight'),
@@ -213,17 +576,31 @@ function handleOnboardingSubmit(event) {
     glutes: num('glutes'),
     age: num('age'),
     targetWeight: num('target-weight'),
-    createdAt: today,
+    createdAt: toISODate(),
   };
 
-  // TODO: здесь появится запрос к ИИ-агенту Syntx, который вернёт цели КБЖУ.
-  // Пока сохраняем дефолтные значения.
+  const restore = setButtonLoading(button, 'ИИ анализирует…');
+  setFormError(form, '');
+
+  let goals = null;
+  try {
+    const raw = await callModel(buildGoalsPrompt(profile), 300);
+    goals = normalizeGoals(parseModelJson(raw));
+    if (!goals) throw new Error('Модель вернула некорректные значения');
+  } catch (err) {
+    console.error('Расчёт целей не удался:', err);
+    setFormError(form, `${err.message}. Применены цели по умолчанию 1800 ккал.`);
+    goals = { ...DEFAULT_GOALS };
+  } finally {
+    restore();
+  }
+
   state.profile = profile;
-  state.goals = { ...DEFAULT_GOALS };
+  state.goals = goals;
 
   // Данные онбординга становятся первым замером в истории прогресса
   upsertMetric({
-    date: today,
+    date: profile.createdAt,
     weight: profile.currentWeight,
     waist: profile.waist,
     hips: profile.hips,
@@ -231,34 +608,30 @@ function handleOnboardingSubmit(event) {
   });
 
   save(STORAGE_KEYS.profile, profile);
-  save(STORAGE_KEYS.goals, state.goals);
+  save(STORAGE_KEYS.goals, goals);
 
   hideOnboarding();
   renderAll();
 }
 
 /* =========================================================
-   6. МОДАЛЬНЫЕ ОКНА
+   11. МОДАЛЬНЫЕ ОКНА
    ========================================================= */
 
-/** Открывает шторку (класс .open даёт display: flex в CSS) */
 function openModal(modal) {
   modal.classList.add('open');
   modal.setAttribute('aria-hidden', 'false');
 }
 
-/** Закрывает шторку */
 function closeModal(modal) {
   modal.classList.remove('open');
   modal.setAttribute('aria-hidden', 'true');
 }
 
-/** Закрывает все открытые окна (например, по Escape) */
 function closeAllModals() {
   document.querySelectorAll('.modal.open').forEach((modal) => closeModal(modal));
 }
 
-/** Подключает открытие и закрытие шторок */
 function initModals() {
   $('btn-add-meal').addEventListener('click', () => {
     resetMealForm();
@@ -270,7 +643,6 @@ function initModals() {
     openModal($('modal-add-metrics'));
   });
 
-  // Крестик и подложка имеют атрибут data-close-modal
   document.querySelectorAll('[data-close-modal]').forEach((element) => {
     element.addEventListener('click', () => closeModal(element.closest('.modal')));
   });
@@ -281,65 +653,147 @@ function initModals() {
 }
 
 /* =========================================================
-   7. ДОБАВЛЕНИЕ ПРИЁМА ПИЩИ
+   12. ПРИЁМ ПИЩИ: ФОТО
    ========================================================= */
 
 function resetMealForm() {
   $('form-meal').reset();
-  state.pendingPhotoName = '';
+  state.pendingPhoto = null;
+  state.photoTask = null;
   $('meal-photo-name').textContent = DEFAULT_PHOTO_LABEL;
+  setFormError($('form-meal'), '');
 }
 
-/** Запоминает имя выбранного фото и показывает его в кнопке */
+/** Выбор файла: читаем, уменьшаем, показываем имя */
 function handlePhotoChange(event) {
   const file = event.target.files[0];
-  state.pendingPhotoName = file ? file.name : '';
-  $('meal-photo-name').textContent = file ? file.name : DEFAULT_PHOTO_LABEL;
+  state.pendingPhoto = null;
+  state.photoTask = null;
+
+  if (!file) {
+    $('meal-photo-name').textContent = DEFAULT_PHOTO_LABEL;
+    return;
+  }
+
+  $('meal-photo-name').textContent = 'Обработка фото…';
+
+  // Сохраняем Promise, чтобы отправка могла его дождаться
+  state.photoTask = (async () => {
+    try {
+      const prepared = await preparePhoto(file);
+      state.pendingPhoto = prepared;
+      // Показываем имя и вес сжатого файла — видно, что фото не «тяжёлое»
+      $('meal-photo-name').textContent =
+        `${prepared.name} · ${dataUrlSizeKb(prepared.dataUrl)} КБ`;
+    } catch (err) {
+      state.pendingPhoto = null;
+      $('meal-photo-name').textContent = DEFAULT_PHOTO_LABEL;
+      setFormError($('form-meal'), 'Не удалось прочитать фото. Попробуйте другой файл.');
+    }
+  })();
 }
 
-/**
- * ВРЕМЕННАЯ оценка КБЖУ по весу: считаем по заглушке на 100 г.
- * Когда подключим агента, эта функция будет заменена ответом API.
- */
-function estimateNutrition(weightG) {
-  const k = weightG / 100;
-  return {
-    kcal: Math.round(STUB_PER_100G.kcal * k),
-    protein: Math.round(STUB_PER_100G.protein * k),
-    fats: Math.round(STUB_PER_100G.fats * k),
-    carbs: Math.round(STUB_PER_100G.carbs * k),
-  };
-}
-
-/** Кнопка "Отправить агенту" */
-function handleMealSubmit(event) {
-  event.preventDefault();
-
-  const weight = Number($('meal-weight').value);
-  const name = $('meal-name').value.trim() || 'Приём пищи';
-  if (!(weight > 0)) return;
-
-  const now = new Date();
-  state.meals.push({
-    id: Date.now(),
-    date: toISODate(now),
-    time: now.toTimeString().slice(0, 5), // "HH:MM"
-    name,
-    weight,
-    hasPhoto: Boolean(state.pendingPhotoName),
-    ...estimateNutrition(weight),
-  });
-
-  save(STORAGE_KEYS.meals, state.meals);
-  closeModal($('modal-add-meal'));
-  renderAll();
+/** Промпт для распознавания блюда */
+function buildMealPrompt(grams) {
+  return [
+    'Проанализируй фото этого блюда.',
+    `Его общий вес составляет ${grams} грамм.`,
+    'Рассчитай КБЖУ этого приема пищи на основе состава.',
+    'Верни ответ СТРОГО в формате JSON без markdown:',
+    '{"title": "Название блюда на русском", "calories": 420, "protein": 25, "fat": 12, "carbs": 53}',
+  ].join(' ');
 }
 
 /* =========================================================
-   8. ЗАМЕРЫ (ВКЛАДКА "ПРОГРЕСС")
+   13. ПРИЁМ ПИЩИ: ОТПРАВКА АГЕНТУ
    ========================================================= */
 
-/** Заполняет форму замеров последними значениями, чтобы было проще править */
+/**
+ * Собирает мультимодальный контент: текст + картинка в base64.
+ * Формат image_url с data-url поддерживается OpenRouter.
+ */
+function buildMealContent(grams, photoDataUrl) {
+  const parts = [{ type: 'text', text: buildMealPrompt(grams) }];
+  if (photoDataUrl) {
+    parts.push({ type: 'image_url', image_url: { url: photoDataUrl } });
+  }
+  return parts;
+}
+
+/** Проверяет и нормализует распознанный приём пищи */
+function normalizeMeal(data) {
+  const meal = {
+    title: String(data.title || 'Приём пищи').slice(0, 80),
+    kcal: round(data.calories),
+    protein: round(data.protein),
+    fats: round(data.fat ?? data.fats),
+    carbs: round(data.carbs),
+  };
+
+  const valid = meal.kcal > 0 && meal.kcal < 5000;
+  return valid ? meal : null;
+}
+
+async function handleMealSubmit(event) {
+  event.preventDefault();
+
+  const form = event.target;
+  const button = form.querySelector('button[type="submit"]');
+  const grams = Number($('meal-weight').value);
+
+  setFormError(form, '');
+  if (!(grams > 0)) {
+    setFormError(form, 'Укажите вес блюда в граммах.');
+    return;
+  }
+
+  const restore = setButtonLoading(button, 'ИИ анализирует…');
+
+  try {
+    // Если фото ещё обрабатывается — дождёмся, иначе уйдёт запрос без картинки
+    if (state.photoTask) await state.photoTask;
+
+    const content = buildMealContent(grams, state.pendingPhoto?.dataUrl);
+    const raw = await callModel(content, 400);
+    const analyzed = normalizeMeal(parseModelJson(raw));
+
+    if (!analyzed) throw new Error('Не удалось распознать блюдо');
+
+    const now = new Date();
+    state.meals.push({
+      id: Date.now(),
+      date: toISODate(now),
+      time: now.toTimeString().slice(0, 5),
+      title: analyzed.title,
+      grams,
+      kcal: analyzed.kcal,
+      protein: analyzed.protein,
+      fats: analyzed.fats,
+      carbs: analyzed.carbs,
+      photo: state.pendingPhoto?.thumb || '',
+    });
+
+    if (!save(STORAGE_KEYS.meals, state.meals)) {
+      // Квота закончилась: убираем фото у этой записи и пробуем снова
+      state.meals[state.meals.length - 1].photo = '';
+      save(STORAGE_KEYS.meals, state.meals);
+    }
+
+    closeModal($('modal-add-meal'));
+    renderAll();
+    toast(`${analyzed.title}: ${analyzed.kcal} ккал`, 'success');
+  } catch (err) {
+    console.error('Распознавание не удалось:', err);
+    setFormError(form, `${err.message}. Попробуйте ещё раз.`);
+  } finally {
+    restore();
+  }
+}
+
+/* =========================================================
+   14. ЗАМЕРЫ
+   ========================================================= */
+
 function fillMetricsForm() {
   const last = state.metrics[state.metrics.length - 1];
   if (!last) return;
@@ -349,7 +803,6 @@ function fillMetricsForm() {
   $('new-glutes').value = last.glutes;
 }
 
-/** Кнопка "Сохранить замеры" */
 function handleMetricsSubmit(event) {
   event.preventDefault();
 
@@ -361,20 +814,19 @@ function handleMetricsSubmit(event) {
     glutes: Number($('new-glutes').value),
   };
 
-  // Все значения должны быть положительными числами
   const values = [entry.weight, entry.waist, entry.hips, entry.glutes];
   if (values.some((v) => !(v > 0))) return;
 
   upsertMetric(entry);
   closeModal($('modal-add-metrics'));
   renderAll();
+  toast('Замеры сохранены', 'success');
 }
 
 /* =========================================================
-   9. ОТРИСОВКА (состояние → DOM)
+   15. ОТРИСОВКА
    ========================================================= */
 
-/** Дата и приветствие на Главной и в Истории */
 function renderGreeting() {
   const now = new Date();
   const today = toISODate(now);
@@ -383,7 +835,6 @@ function renderGreeting() {
   $('greeting').textContent = greetingByHour(now.getHours());
 }
 
-/** Кольцо и число калорий */
 function renderCalories(totals) {
   const goal = state.goals.kcal;
   const ratio = goal ? Math.min(totals.kcal / goal, 1) : 0;
@@ -391,13 +842,11 @@ function renderCalories(totals) {
   $('calorie-current').textContent = totals.kcal;
   $('calorie-target').textContent = goal;
 
-  // Длина дуги = длина окружности * (1 - прогресс). Ноль смещения = полное кольцо
   const ring = $('ring-fill');
   ring.style.strokeDasharray = RING_LENGTH;
   ring.style.strokeDashoffset = RING_LENGTH * (1 - ratio);
 }
 
-/** Одна полоска БЖУ: key = 'protein' | 'fats' | 'carbs' */
 function renderMacro(key, value) {
   const goal = state.goals[key];
   $(`${key}-consumed`).textContent = value;
@@ -405,24 +854,38 @@ function renderMacro(key, value) {
   $(`${key}-bar`).style.width = `${percent(value, goal)}%`;
 }
 
-/** Лента приёмов пищи за день (создаём узлы через el(), без innerHTML) */
+/** Лента приёмов пищи за сегодня */
 function renderMeals(todayMeals) {
   const list = $('meal-list');
   list.replaceChildren();
   $('history-empty').classList.toggle('hidden', todayMeals.length > 0);
 
-  todayMeals.forEach((meal) => {
+  // Новые записи сверху
+  [...todayMeals].reverse().forEach((meal) => {
     const card = el('article', 'meal-card');
 
     const photo = el('div', 'meal-photo');
-    photo.appendChild(el('div', 'meal-photo-placeholder', meal.hasPhoto ? '📷' : '🍽️'));
+    if (meal.photo) {
+      const img = el('img');
+      img.src = meal.photo;
+      img.alt = meal.title;
+      img.loading = 'lazy';
+      photo.appendChild(img);
+    } else {
+      photo.appendChild(el('div', 'meal-photo-placeholder', '🍽️'));
+    }
 
     const info = el('div', 'meal-info');
-    info.appendChild(el('h4', 'meal-name', meal.name));
-    info.appendChild(el('time', 'meal-time', `${meal.time} · ${meal.weight} г`));
+    info.appendChild(el('h4', 'meal-name', meal.title));
+    info.appendChild(el('time', 'meal-time', `${meal.time} · ${meal.grams} г`));
 
     const macros = el('div', 'meal-macros');
-    const parts = [`${meal.kcal} ккал`, `Б: ${meal.protein}г`, `Ж: ${meal.fats}г`, `У: ${meal.carbs}г`];
+    const parts = [
+      `${meal.kcal} ккал`,
+      `Б: ${meal.protein}г`,
+      `Ж: ${meal.fats}г`,
+      `У: ${meal.carbs}г`,
+    ];
     parts.forEach((text, i) => {
       if (i > 0) macros.appendChild(el('span', '', '•'));
       macros.appendChild(el('span', '', text));
@@ -434,7 +897,6 @@ function renderMeals(todayMeals) {
   });
 }
 
-/** Карточки замеров: берём последнюю запись */
 function renderProgress() {
   const last = state.metrics[state.metrics.length - 1];
 
@@ -451,7 +913,6 @@ function renderProgress() {
   });
 }
 
-/** Перерисовка всего интерфейса из state. Вызывается после любого изменения */
 function renderAll() {
   const today = toISODate();
   const todayMeals = state.meals.filter((m) => m.date === today);
@@ -467,27 +928,23 @@ function renderAll() {
 }
 
 /* =========================================================
-   10. ИНИЦИАЛИЗАЦИЯ
+   16. ИНИЦИАЛИЗАЦИЯ
    ========================================================= */
 
-function initMealForm() {
-  $('form-meal').addEventListener('submit', handleMealSubmit);
-  $('meal-photo').addEventListener('change', handlePhotoChange);
-}
-
-function initMetricsForm() {
-  $('form-metrics').addEventListener('submit', handleMetricsSubmit);
-}
-
-/** Точка входа: выполняется один раз после загрузки страницы */
 function init() {
   loadState();
   initTabs();
   initOnboarding();
   initModals();
-  initMealForm();
-  initMetricsForm();
+  $('form-meal').addEventListener('submit', handleMealSubmit);
+  $('meal-photo').addEventListener('change', handlePhotoChange);
+  $('form-metrics').addEventListener('submit', handleMetricsSubmit);
   renderAll();
 }
 
-document.addEventListener('DOMContentLoaded', init);
+// Запускаем сразу, если DOM уже разобран, иначе ждём DOMContentLoaded
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', init);
+} else {
+  init();
+}

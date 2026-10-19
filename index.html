@@ -6,7 +6,13 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="default">
   <title>Трекер питания</title>
-  <link rel="stylesheet" href="style.css">
+  <!--
+    ВЕРСИОНИРОВАНИЕ КЭША.
+    При каждом обновлении style.css или app.js увеличьте число в ?v=
+    у обеих ссылок ниже (сейчас v=3). Иначе Chrome на Android может
+    показывать старые файлы из кэша.
+  -->
+  <link rel="stylesheet" href="style.css?v=3">
 </head>
 <body class="is-onboarding">
 
@@ -225,7 +231,7 @@
       <form class="modal-form" id="form-meal">
         <div class="form-group">
           <label class="btn-photo-upload">
-            <input type="file" id="meal-photo" accept="image/*" capture="environment" hidden>
+            <input type="file" id="meal-photo" accept="image/*" hidden>
             <span class="icon">📷</span>
             <span id="meal-photo-name">Загрузить фото / Сделать снимок</span>
           </label>
@@ -273,6 +279,6 @@
     </div>
   </div>
 
-  <script src="app.js"></script>
+  <script src="app.js?v=3"></script>
 </body>
 </html>
