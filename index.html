@@ -9,10 +9,10 @@
   <!--
     ВЕРСИОНИРОВАНИЕ КЭША.
     При каждом обновлении style.css или app.js увеличьте число в ?v=
-    у обеих ссылок ниже (сейчас v=5). Иначе Chrome на Android может
+    у обеих ссылок ниже (сейчас v=6). Иначе Chrome на Android может
     показывать старые файлы из кэша.
   -->
-  <link rel="stylesheet" href="style.css?v=5">
+  <link rel="stylesheet" href="style.css?v=6">
 </head>
 <body class="is-onboarding">
 
@@ -53,6 +53,22 @@
         <div class="form-group">
           <label for="target-weight">Целевой вес (кг)</label>
           <input type="number" id="target-weight" name="target-weight" step="0.1" min="20" required>
+        </div>
+
+        <div class="form-group">
+          <label id="goal-label">Ваша цель</label>
+          <div class="segmented" id="goal-segmented" role="radiogroup" aria-labelledby="goal-label">
+            <button type="button" class="segmented-item" data-goal="lose" role="radio" aria-checked="false">
+              Похудение
+            </button>
+            <button type="button" class="segmented-item active" data-goal="maintain" role="radio" aria-checked="true">
+              Поддержание
+            </button>
+            <button type="button" class="segmented-item" data-goal="gain" role="radio" aria-checked="false">
+              Набор массы
+            </button>
+          </div>
+          <p class="form-hint" id="goal-hint">Баланс трат и потребления, без дефицита и профицита</p>
         </div>
 
         <button type="submit" class="btn-primary">
@@ -252,7 +268,7 @@
 
         <div class="form-group">
           <div class="ingredients-head">
-            <label id="ingredients-label">Состав и вес</label>
+            <label id="ingredients-label">Ингредиенты еды (г)</label>
             <button class="btn-add-ingredient" id="btn-add-ingredient" type="button">+ Ингредиент</button>
           </div>
           <p class="form-hint">
@@ -261,8 +277,19 @@
           <div class="ingredients" id="ingredients" role="group" aria-labelledby="ingredients-label"></div>
         </div>
 
-        <p class="ingredients-total" id="ingredients-total">Итого: 0 г</p>
-        <button type="submit" class="btn-primary">Отправить агенту</button>
+        <div class="form-group">
+          <div class="ingredients-head">
+            <label id="drinks-label">Напитки (мл)</label>
+            <button class="btn-add-ingredient" id="btn-add-drink" type="button">+ Напиток</button>
+          </div>
+          <p class="form-hint">
+            Кофе, чай, сок, латте — объём в миллилитрах. Можно оставить пустым.
+          </p>
+          <div class="ingredients" id="drinks" role="group" aria-labelledby="drinks-label"></div>
+        </div>
+
+        <p class="meal-total" id="meal-total">Еда: 0 г · Напитки: 0 мл</p>
+        <button type="submit" class="btn-primary" id="btn-send-meal">Отправить агенту</button>
       </form>
     </div>
   </div>
@@ -277,6 +304,11 @@
       </header>
 
       <div class="settings-body">
+        <section class="settings-section">
+          <h4>Цель</h4>
+          <p class="form-hint" id="settings-goal">не выбрана</p>
+        </section>
+
         <section class="settings-section">
           <h4>Ключ OpenRouter</h4>
           <p class="form-hint">Хранится только на этом устройстве.</p>
@@ -334,6 +366,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
 </body>
 </html>

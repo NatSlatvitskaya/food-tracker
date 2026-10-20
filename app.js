@@ -39,8 +39,50 @@ const STORAGE_KEYS = {
   meals: 'tracker.meals',
 };
 
-// Резервные цели, если ИИ недоступен
-const DEFAULT_GOALS = { kcal: 1800, protein: 90, fats: 60, carbs: 180 };
+/*
+  ЦЕЛИ ПО ВЕСУ. Для каждой — своя формулировка для ИИ и резервные значения
+  на случай, если модель недоступна. Проценты БЖУ взяты из ТЗ:
+    похудение  — дефицит 15-20%, Б 25 / Ж 30 / У 45
+    поддержание — баланс,        Б 20 / Ж 30 / У 50
+    набор      — профицит 10-15%, Б 30 / Ж 25 / У 45
+
+  Резервные граммы посчитаны по калорийности: белок и углеводы 4 ккал/г,
+  жиры 9 ккал/г.
+*/
+const GOALS_META = {
+  lose: {
+    label: 'Похудение',
+    defaults: { kcal: 1800, protein: 113, fats: 60, carbs: 203 },
+    hint: 'Дефицит 15–20% от нормы поддержания, белки выше обычного',
+    instruction:
+      'Цель — снижение веса. Рассчитай норму поддержания и создай дефицит 15-20%. ' +
+      'Распределение калорий: белки 25%, жиры 30%, углеводы 45%.',
+  },
+  maintain: {
+    label: 'Поддержание формы',
+    defaults: { kcal: 2000, protein: 100, fats: 67, carbs: 250 },
+    hint: 'Баланс трат и потребления, без дефицита и профицита',
+    instruction:
+      'Цель — удержание веса. Норма равна суточным тратам, без дефицита и профицита. ' +
+      'Распределение калорий: белки 20%, жиры 30%, углеводы 50%.',
+  },
+  gain: {
+    label: 'Набор мышечной массы',
+    defaults: { kcal: 2200, protein: 165, fats: 61, carbs: 248 },
+    hint: 'Профицит 10–15%, больше белка для роста мышц',
+    instruction:
+      'Цель — набор мышечной массы. Рассчитай норму поддержания и добавь профицит 10-15%. ' +
+      'Распределение калорий: белки 30%, жиры 25%, углеводы 45%.',
+  },
+};
+
+const DEFAULT_GOAL = 'maintain';
+
+/** Резервные цели под выбранную цель по весу */
+function defaultGoalsFor(goal) {
+  const meta = GOALS_META[goal] || GOALS_META[DEFAULT_GOAL];
+  return { ...meta.defaults };
+}
 
 // Длина окружности кольца (r = 60), совпадает с stroke-dasharray в CSS
 const RING_LENGTH = 2 * Math.PI * 60;
@@ -179,16 +221,20 @@ function parseModelJson(raw) {
 
 const state = {
   profile: null,
-  goals: { ...DEFAULT_GOALS },
+  goals: defaultGoalsFor(DEFAULT_GOAL),
   metrics: [],
   meals: [],
-  pendingPhoto: null, // { name, dataUrl } выбранного фото
-  photoTask: null,    // Promise обработки фото (чтобы дождаться его перед отправкой)
+  pendingPhoto: null,   // { name, dataUrl, thumb } выбранного фото
+  photoTask: null,      // Promise обработки фото (чтобы дождаться его перед отправкой)
+  existingPhoto: '',    // фото из редактируемой записи (если новое не выбрано)
+  editingMealId: null,  // id приёма пищи в режиме правки, иначе null
+  goalDraft: DEFAULT_GOAL, // выбранная цель в онбординге
 };
 
 function loadState() {
   state.profile = load(STORAGE_KEYS.profile, null);
-  state.goals = load(STORAGE_KEYS.goals, { ...DEFAULT_GOALS });
+  state.goalDraft = state.profile?.goal || DEFAULT_GOAL;
+  state.goals = load(STORAGE_KEYS.goals, defaultGoalsFor(state.goalDraft));
   state.metrics = load(STORAGE_KEYS.metrics, []);
   state.meals = load(STORAGE_KEYS.meals, []);
 }
@@ -597,16 +643,48 @@ function initOnboarding() {
     showOnboarding();
   }
   $('onboarding-form').addEventListener('submit', handleOnboardingSubmit);
+  initGoalPicker();
 }
 
-/** Промпт для расчёта целей */
+/** Сегментированный переключатель «Ваша цель» */
+function initGoalPicker() {
+  const buttons = [...$('goal-segmented').querySelectorAll('.segmented-item')];
+
+  const paint = (goal) => {
+    buttons.forEach((btn) => {
+      const active = btn.dataset.goal === goal;
+      btn.classList.toggle('active', active);
+      btn.setAttribute('aria-checked', String(active));
+    });
+
+    // Подсказка объясняет, что именно означает выбранная цель
+    const meta = GOALS_META[goal] || GOALS_META[DEFAULT_GOAL];
+    const hint = $('goal-hint');
+    if (hint) hint.textContent = meta.hint;
+  };
+
+  buttons.forEach((btn) => {
+    btn.addEventListener('click', () => {
+      state.goalDraft = btn.dataset.goal;
+      paint(state.goalDraft);
+    });
+  });
+
+  paint(state.goalDraft);
+}
+
+/** Промпт для расчёта целей: текст зависит от выбранной цели по весу */
 function buildGoalsPrompt(profile) {
+  const meta = GOALS_META[profile.goal] || GOALS_META[DEFAULT_GOAL];
+
   return [
-    `Пользователь: возраст ${profile.age}, вес ${profile.currentWeight},`,
-    `замеры ${profile.waist}/${profile.hips}/${profile.glutes},`,
-    `цель по весу ${profile.targetWeight}.`,
-    'Рассчитай суточную норму калорий по формуле Миффлина-Сан Жеора',
-    'с безопасным дефицитом 15-20% для плавного похудения. Распредели БЖУ.',
+    `Пользователь: возраст ${profile.age}, вес ${profile.currentWeight} кг,`,
+    `замеры талия/бёдра/ягодицы ${profile.waist}/${profile.hips}/${profile.glutes} см,`,
+    `желаемый вес ${profile.targetWeight} кг.`,
+    `Главная цель: ${meta.label}.`,
+    meta.instruction,
+    'Рассчитай суточную норму калорий по формуле Миффлина-Сан Жеора.',
+    'Переведи проценты в граммы: белки и углеводы — 4 ккал на грамм, жиры — 9 ккал на грамм.',
     'Верни ответ СТРОГО в формате JSON без markdown и без лишних слов:',
     '{"calories": 1750, "protein": 100, "fat": 58, "carbs": 206}',
   ].join(' ');
@@ -648,6 +726,7 @@ async function handleOnboardingSubmit(event) {
     glutes: num('glutes'),
     age: num('age'),
     targetWeight: num('target-weight'),
+    goal: state.goalDraft,
     createdAt: toISODate(),
   };
 
@@ -661,8 +740,9 @@ async function handleOnboardingSubmit(event) {
     if (!goals) throw new Error('Модель вернула некорректные значения');
   } catch (err) {
     console.error('Расчёт целей не удался:', err);
-    setFormError(form, `${err.message}. Применены цели по умолчанию 1800 ккал.`);
-    goals = { ...DEFAULT_GOALS };
+    const fallback = defaultGoalsFor(profile.goal);
+    setFormError(form, `${err.message}. Применены цели по умолчанию ${fallback.kcal} ккал.`);
+    goals = fallback;
   } finally {
     restore();
   }
@@ -705,9 +785,14 @@ function closeAllModals() {
 }
 
 function initModals() {
-  $('btn-add-meal').addEventListener('click', () => {
-    resetMealForm();
-    openModal($('modal-add-meal'));
+  $('btn-add-meal').addEventListener('click', openMealModalForNew);
+
+  // Карточки истории перерисовываются, поэтому слушаем контейнер,
+  // а не каждую кнопку (делегирование)
+  $('meal-list').addEventListener('click', (event) => {
+    const button = event.target.closest('.meal-edit');
+    if (!button) return;
+    openMealModalForEdit(Number(button.dataset.editId));
   });
 
   $('btn-add-metrics').addEventListener('click', () => {
@@ -732,6 +817,8 @@ function resetMealForm() {
   $('form-meal').reset();
   state.pendingPhoto = null;
   state.photoTask = null;
+  state.existingPhoto = '';
+  state.editingMealId = null;
   $('meal-photo-name').textContent = DEFAULT_PHOTO_LABEL;
   setFormError($('form-meal'), '');
   resetIngredients();
@@ -767,30 +854,50 @@ function handlePhotoChange(event) {
 }
 
 /**
- * Промпт для распознавания блюда.
- * Перечисляем каждый ингредиент с весом — модель считает точнее,
- * чем по одному общему весу, потому что видит структуру блюда.
+ * Промпт для распознавания приёма пищи.
+ * Еда идёт в граммах, напитки — в миллилитрах: модель должна знать,
+ * что 250 мл латте и 250 г латте — не одно и то же.
  */
-function buildMealPrompt(ingredients, title, hasPhoto) {
-  const list = ingredients.map((i) => `${i.name} — ${i.grams} г`).join(', ');
-  const total = totalGrams(ingredients);
+function buildMealPrompt(ingredients, drinks, title, hasPhoto) {
+  const lines = [];
 
-  const lines = [
-    hasPhoto ? 'Проанализируй фото этого блюда и указанный состав.' : 'Проанализируй состав блюда.',
-    `Блюдо: ${title || 'без названия'}.`,
-    `Состав и вес продуктов: ${list}.`,
-    `Общий вес блюда: ${total} г.`,
-    'Рассчитай КБЖУ всего блюда на основе состава и веса каждого продукта.',
-    'Верни ответ СТРОГО в формате JSON без markdown:',
-    '{"title": "Название блюда на русском", "calories": 420, "protein": 25, "fat": 12, "carbs": 53}',
-  ];
+  lines.push(
+    hasPhoto
+      ? 'Проанализируй фото этого приёма пищи и указанный состав.'
+      : 'Проанализируй состав приёма пищи.'
+  );
+
+  if (title) lines.push(`Блюдо: ${title}.`);
+
+  if (ingredients.length) {
+    const list = ingredients.map((i) => `${i.name} — ${i.grams} г`).join(', ');
+    lines.push(`Еда (вес в граммах): ${list}. Общий вес еды: ${totalGrams(ingredients)} г.`);
+  }
+
+  if (drinks.length) {
+    const list = drinks.map((d) => `${d.name} — ${d.ml} мл`).join(', ');
+    lines.push(
+      `Напитки (объём в миллилитрах): ${list}. Общий объём: ${totalMl(drinks)} мл.`
+    );
+    lines.push(
+      'Для напитков пересчитывай объём в вес по плотности (вода и кофе ≈ 1 г/мл, ' +
+        'молоко ≈ 1.03 г/мл, сок ≈ 1.05 г/мл) и учитывай калорийность по составу.'
+    );
+  }
+
+  lines.push('Рассчитай КБЖУ всего приёма пищи — еды и напитков вместе.');
+  lines.push('Верни ответ СТРОГО в формате JSON без markdown:');
+  lines.push(
+    '{"title": "Название на русском", "calories": 420, "protein": 25, "fat": 12, "carbs": 53}'
+  );
+
   return lines.join(' ');
 }
 
 /** Собирает мультимодальный контент: текст состава + фото, если есть */
-function buildMealContent(ingredients, title, photoDataUrl) {
+function buildMealContent(ingredients, drinks, title, photoDataUrl) {
   const parts = [
-    { type: 'text', text: buildMealPrompt(ingredients, title, Boolean(photoDataUrl)) },
+    { type: 'text', text: buildMealPrompt(ingredients, drinks, title, Boolean(photoDataUrl)) },
   ];
   if (photoDataUrl) {
     parts.push({ type: 'image_url', image_url: { url: photoDataUrl } });
@@ -807,87 +914,117 @@ function totalGrams(ingredients) {
   return ingredients.reduce((sum, i) => sum + i.grams, 0);
 }
 
-/** Читает строки ингредиентов из DOM. Пустые строки пропускает */
-function readIngredients() {
-  return [...$('ingredients').querySelectorAll('.ingredient-row')]
-    .map((row) => ({
-      name: row.querySelector('.ingredient-name').value.trim(),
-      grams: Number(row.querySelector('.ingredient-grams').value),
-    }))
-    .filter((i) => i.name && i.grams > 0);
-}
-
-/** Пересчитывает подпись «Итого: N г» */
-function updateIngredientsTotal() {
-  const total = totalGrams(readIngredients());
-  $('ingredients-total').textContent = `Итого: ${total} г`;
+/** Сумма объёмов всех напитков, мл */
+function totalMl(drinks) {
+  return drinks.reduce((sum, d) => sum + (d.ml || 0), 0);
 }
 
 /**
- * Добавляет строку ингредиента.
- * Удаление доступно, только если строк больше одной —
- * иначе форма останется пустой без возможности ввода.
+ * Читает строки из контейнера. Поле веса называется .ingredient-grams
+ * в обоих блоках (еда и напитки) — различается только единица измерения.
  */
-function addIngredientRow(name = '', grams = '') {
+function readRows(containerId, key = 'grams') {
+  return [...$(containerId).querySelectorAll('.ingredient-row')]
+    .map((row) => ({
+      name: row.querySelector('.ingredient-name').value.trim(),
+      [key]: Number(row.querySelector('.ingredient-grams').value),
+    }))
+    .filter((item) => item.name && item[key] > 0);
+}
+
+const readIngredients = () => readRows('ingredients', 'grams');
+const readDrinks = () => readRows('drinks', 'ml');
+
+/** Пересчитывает подпись «Еда: N г · Напитки: M мл» */
+function updateMealTotal() {
+  const food = totalGrams(readIngredients());
+  const drinks = totalMl(readDrinks());
+  $('meal-total').textContent = `Еда: ${food} г · Напитки: ${drinks} мл`;
+}
+
+/**
+ * Добавляет строку продукта или напитка.
+ *
+ * containerId — 'ingredients' | 'drinks'
+ * unit        — 'г' | 'мл'
+ * removable   — можно ли удалять последнюю строку (у еды нельзя, у напитков можно)
+ */
+function addRow(containerId, unit, removable) {
+  const container = $(containerId);
   const row = el('div', 'ingredient-row');
 
   const nameInput = el('input', 'ingredient-name');
   nameInput.type = 'text';
-  nameInput.placeholder = 'Продукт';
-  nameInput.value = name;
+  nameInput.placeholder = containerId === 'drinks' ? 'Напиток' : 'Продукт';
   nameInput.autocomplete = 'off';
 
-  const gramsInput = el('input', 'ingredient-grams');
-  gramsInput.type = 'number';
-  gramsInput.inputMode = 'numeric';
-  gramsInput.min = '1';
-  gramsInput.placeholder = 'г';
-  gramsInput.value = grams;
+  const amountInput = el('input', 'ingredient-grams');
+  amountInput.type = 'number';
+  amountInput.inputMode = 'numeric';
+  amountInput.min = '1';
+  amountInput.placeholder = unit;
 
   const remove = el('button', 'ingredient-remove', '×');
   remove.type = 'button';
-  remove.setAttribute('aria-label', 'Удалить ингредиент');
+  remove.setAttribute('aria-label', 'Удалить строку');
 
   const sync = () => {
-    updateIngredientsTotal();
-    const rows = $('ingredients').querySelectorAll('.ingredient-row');
-    const onlyOne = rows.length <= 1;
-    $('ingredients').querySelectorAll('.ingredient-remove').forEach((btn) => {
-      btn.disabled = onlyOne;
+    updateMealTotal();
+    const count = container.querySelectorAll('.ingredient-row').length;
+    container.querySelectorAll('.ingredient-remove').forEach((btn) => {
+      btn.disabled = removable ? count === 0 : count <= 1;
     });
   };
 
   nameInput.addEventListener('input', sync);
-  gramsInput.addEventListener('input', sync);
+  amountInput.addEventListener('input', sync);
 
   remove.addEventListener('click', () => {
-    if ($('ingredients').querySelectorAll('.ingredient-row').length <= 1) return;
+    const count = container.querySelectorAll('.ingredient-row').length;
+    if (!removable && count <= 1) return;
     row.remove();
     sync();
-
-    // Фокус на следующую разумную строку — чтобы не терять контекст
-    const next = $('ingredients').querySelector('.ingredient-name:last-of-type');
-    if (next) next.focus();
   });
 
-  // Enter в поле веса добавляет новую строку — удобно на телефоне
-  gramsInput.addEventListener('keydown', (event) => {
+  // Enter в поле количества добавляет новую строку — удобно на телефоне
+  amountInput.addEventListener('keydown', (event) => {
     if (event.key !== 'Enter') return;
     event.preventDefault();
-    addIngredientRow();
-    const inputs = $('ingredients').querySelectorAll('.ingredient-name');
+    addRow(containerId, unit, removable);
+    const inputs = container.querySelectorAll('.ingredient-name');
     inputs[inputs.length - 1].focus();
   });
 
-  row.append(nameInput, gramsInput, remove);
-  $('ingredients').appendChild(row);
+  row.append(nameInput, amountInput, remove);
+  container.appendChild(row);
   sync();
+  return row;
 }
 
-/** Очищает состав и оставляет одну пустую строку */
+/** Еда: минимум одна строка обязательна */
+function addIngredientRow(name = '', grams = '', focus = false) {
+  const row = addRow('ingredients', 'г', false);
+  if (name) row.querySelector('.ingredient-name').value = name;
+  if (grams !== '') row.querySelector('.ingredient-grams').value = grams;
+  if (focus) row.querySelector('.ingredient-name').focus();
+  return row;
+}
+
+/** Напитки: полностью необязательны, стартуют с одной пустой строки */
+function addDrinkRow(name = '', ml = '', focus = false) {
+  const row = addRow('drinks', 'мл', true);
+  if (name) row.querySelector('.ingredient-name').value = name;
+  if (ml !== '') row.querySelector('.ingredient-grams').value = ml;
+  if (focus) row.querySelector('.ingredient-name').focus();
+  return row;
+}
+
+/** Очищает оба блока и оставляет по одной пустой строке */
 function resetIngredients() {
   $('ingredients').replaceChildren();
+  $('drinks').replaceChildren();
   addIngredientRow();
+  addDrinkRow();
 }
 
 /* =========================================================
@@ -917,8 +1054,10 @@ async function handleMealSubmit(event) {
   setFormError(form, '');
 
   const ingredients = readIngredients();
-  if (!ingredients.length) {
-    setFormError(form, 'Добавьте хотя бы один ингредиент с названием и весом.');
+  const drinks = readDrinks();
+
+  if (!ingredients.length && !drinks.length) {
+    setFormError(form, 'Добавьте хотя бы один продукт или напиток с названием и количеством.');
     return;
   }
 
@@ -929,42 +1068,114 @@ async function handleMealSubmit(event) {
     // Если фото ещё обрабатывается — дождёмся, иначе уйдёт запрос без картинки
     if (state.photoTask) await state.photoTask;
 
-    const content = buildMealContent(ingredients, nameInput, state.pendingPhoto?.dataUrl);
+    const content = buildMealContent(ingredients, drinks, nameInput, state.pendingPhoto?.dataUrl);
     const raw = await callModel(content, 400);
     const analyzed = normalizeMeal(parseModelJson(raw));
 
-    if (!analyzed) throw new Error('Не удалось распознать блюдо');
+    if (!analyzed) throw new Error('Не удалось распознать приём пищи');
 
     const now = new Date();
-    state.meals.push({
-      id: Date.now(),
+    const record = {
       date: toISODate(now),
       time: now.toTimeString().slice(0, 5),
       title: nameInput || analyzed.title,
       ingredients,
+      drinks,
       grams: totalGrams(ingredients),
+      ml: totalMl(drinks),
       kcal: analyzed.kcal,
       protein: analyzed.protein,
       fats: analyzed.fats,
       carbs: analyzed.carbs,
-      photo: state.pendingPhoto?.thumb || '',
-    });
+      photo: state.pendingPhoto?.thumb || state.existingPhoto || '',
+    };
+
+    if (state.editingMealId !== null) {
+      // Режим правки: перезаписываем существующую запись, время и дату сохраняем
+      const index = state.meals.findIndex((m) => m.id === state.editingMealId);
+      if (index >= 0) {
+        record.id = state.meals[index].id;
+        record.date = state.meals[index].date;
+        record.time = state.meals[index].time;
+        state.meals[index] = record;
+      } else {
+        record.id = Date.now();
+        state.meals.push(record);
+      }
+    } else {
+      record.id = Date.now();
+      state.meals.push(record);
+    }
 
     if (!save(STORAGE_KEYS.meals, state.meals)) {
       // Квота закончилась: убираем фото у этой записи и пробуем снова
-      state.meals[state.meals.length - 1].photo = '';
+      const target = state.meals.find((m) => m.id === record.id);
+      if (target) target.photo = '';
       save(STORAGE_KEYS.meals, state.meals);
     }
 
+    const wasEditing = state.editingMealId !== null;
     closeModal($('modal-add-meal'));
     renderAll();
-    toast(`${analyzed.kcal} ккал · записано`, 'success');
+    toast(
+      wasEditing ? `Обновлено: ${analyzed.kcal} ккал` : `${analyzed.kcal} ккал · записано`,
+      'success'
+    );
   } catch (err) {
     console.error('Распознавание не удалось:', err);
     setFormError(form, err.message);
   } finally {
     restore();
   }
+}
+
+/* =========================================================
+   13б. РЕДАКТИРОВАНИЕ ПРИЁМА ПИЩИ
+   ========================================================= */
+
+/** Открывает шторку пустой — для нового приёма */
+function openMealModalForNew() {
+  resetMealForm();
+  $('modal-add-meal-title').textContent = 'Добавить прием пищи';
+  $('btn-send-meal').textContent = 'Отправить агенту';
+  openModal($('modal-add-meal'));
+}
+
+/**
+ * Открывает шторку с данными существующей записи.
+ * Пользователь может дописать продукт или напиток, а при сохранении
+ * запись перезаписывается новым результатом ИИ.
+ */
+function openMealModalForEdit(id) {
+  const meal = state.meals.find((m) => m.id === id);
+  if (!meal) return;
+
+  resetMealForm();
+  state.editingMealId = meal.id;
+  state.existingPhoto = meal.photo || '';
+
+  $('modal-add-meal-title').textContent = 'Изменить приём пищи';
+  $('btn-send-meal').textContent = 'Пересчитать';
+
+  $('meal-name').value = meal.title || '';
+
+  // Восстанавливаем еду
+  $('ingredients').replaceChildren();
+  (meal.ingredients || []).forEach((i) => addIngredientRow(i.name, i.grams));
+  if (!(meal.ingredients || []).length) addIngredientRow();
+
+  // Восстанавливаем напитки
+  $('drinks').replaceChildren();
+  (meal.drinks || []).forEach((d) => addDrinkRow(d.name, d.ml ?? d.grams));
+  if (!(meal.drinks || []).length) addDrinkRow();
+
+  updateMealTotal();
+
+  if (meal.photo) {
+    $('meal-photo-name').textContent = 'Фото сохранено — можно заменить';
+  }
+
+  openModal($('modal-add-meal'));
 }
 
 /* =========================================================
@@ -1053,8 +1264,28 @@ function renderMeals(todayMeals) {
     }
 
     const info = el('div', 'meal-info');
-    info.appendChild(el('h4', 'meal-name', meal.title));
-    info.appendChild(el('time', 'meal-time', `${meal.time} · ${meal.grams} г`));
+
+    // Заголовок и карандаш в одну строку
+    const head = el('div', 'meal-head');
+    head.appendChild(el('h4', 'meal-name', meal.title));
+
+    const edit = el('button', 'meal-edit');
+    edit.type = 'button';
+    edit.setAttribute('aria-label', `Редактировать: ${meal.title}`);
+    edit.dataset.editId = String(meal.id);
+    edit.innerHTML =
+      '<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
+      'stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' +
+      '<path d="M12 20h9"></path>' +
+      '<path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"></path></svg>';
+    head.appendChild(edit);
+    info.appendChild(head);
+
+    // Время, вес еды и объём напитков
+    const meta = [meal.time];
+    if (meal.grams) meta.push(`${meal.grams} г`);
+    if (meal.ml) meta.push(`${meal.ml} мл`);
+    info.appendChild(el('time', 'meal-time', meta.join(' · ')));
 
     const macros = el('div', 'meal-macros');
     const parts = [
@@ -1069,15 +1300,28 @@ function renderMeals(todayMeals) {
     });
     info.appendChild(macros);
 
-    // Состав: свёрнут по умолчанию, чтобы лента не превращалась в простыню
-    if (meal.ingredients?.length) {
+    // Состав: еда и напитки отдельными строками
+    const hasFood = meal.ingredients?.length;
+    const hasDrinks = meal.drinks?.length;
+
+    if (hasFood || hasDrinks) {
       const details = el('details', 'meal-details');
-      const summary = el('summary', 'meal-details-summary', 'Состав');
-      const composition = el('p', 'meal-composition');
-      composition.textContent = meal.ingredients
-        .map((i) => `${i.name} ${i.grams} г`)
-        .join(' · ');
-      details.append(summary, composition);
+      details.appendChild(el('summary', 'meal-details-summary', 'Состав'));
+
+      if (hasFood) {
+        const line = el('p', 'meal-composition');
+        line.textContent = 'Еда: ' + meal.ingredients.map((i) => `${i.name} ${i.grams} г`).join(' · ');
+        details.appendChild(line);
+      }
+
+      if (hasDrinks) {
+        const line = el('p', 'meal-composition');
+        line.textContent =
+          'Напитки: ' +
+          meal.drinks.map((d) => `${d.name} ${d.ml ?? d.grams} мл`).join(' · ');
+        details.appendChild(line);
+      }
+
       info.appendChild(details);
     }
 
@@ -1122,6 +1366,9 @@ function renderAll() {
 
 /** Показывает в настройках, задан ли ключ (сам ключ не раскрываем) */
 function renderSettings() {
+  const meta = GOALS_META[state.profile?.goal];
+  $('settings-goal').textContent = meta ? meta.label : 'не выбрана';
+
   const key = getApiKey();
   const node = $('settings-key');
   if (!key) {
@@ -1146,7 +1393,10 @@ function resetAllData({ keepKey = true } = {}) {
 
   // Сбрасываем состояние в памяти, иначе старые данные останутся в интерфейсе
   state.profile = null;
-  state.goals = { ...DEFAULT_GOALS };
+  state.goalDraft = DEFAULT_GOAL;
+  state.goals = defaultGoalsFor(DEFAULT_GOAL);
+  state.editingMealId = null;
+  state.existingPhoto = '';
   state.metrics = [];
   state.meals = [];
   state.pendingPhoto = null;
@@ -1246,11 +1496,8 @@ function init() {
   $('meal-photo').addEventListener('change', handlePhotoChange);
   $('form-metrics').addEventListener('submit', handleMetricsSubmit);
 
-  $('btn-add-ingredient').addEventListener('click', () => {
-    addIngredientRow();
-    const inputs = $('ingredients').querySelectorAll('.ingredient-name');
-    inputs[inputs.length - 1].focus();
-  });
+  $('btn-add-ingredient').addEventListener('click', () => addIngredientRow('', '', true));
+  $('btn-add-drink').addEventListener('click', () => addDrinkRow('', '', true));
 
   resetIngredients();
   renderAll();

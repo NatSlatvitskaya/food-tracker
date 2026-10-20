@@ -1075,3 +1075,88 @@ body.is-onboarding {
   0%, 100% { opacity: 1; }
   50% { opacity: 0.82; }
 }
+
+/* ===============================================
+   Сегментированный переключатель цели (iOS style)
+   =============================================== */
+
+.segmented {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 2px;
+  padding: 3px;
+  background-color: var(--color-surface);
+  border-radius: var(--radius-md);
+}
+
+.segmented-item {
+  padding: 10px 6px;
+  font-size: 14px;
+  font-weight: var(--font-weight-medium);
+  line-height: 1.25;
+  color: var(--color-text-secondary);
+  border-radius: 13px;
+  transition: background-color 0.2s ease, color 0.2s ease, box-shadow 0.2s ease;
+  text-align: center;
+}
+
+.segmented-item.active {
+  background-color: #ffffff;
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-semibold);
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.12), 0 1px 1px rgba(0, 0, 0, 0.04);
+}
+
+.segmented-item:active {
+  opacity: 0.7;
+}
+
+/* ===============================================
+   Итог приёма: еда + напитки
+   =============================================== */
+
+.meal-total {
+  margin-top: var(--spacing-xs);
+  font-size: 14px;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+  text-align: right;
+}
+
+/* ===============================================
+   Карточка истории: заголовок и кнопка правки
+   =============================================== */
+
+.meal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-xs);
+}
+
+.meal-head .meal-name {
+  flex: 1;
+  min-width: 0;
+}
+
+.meal-edit {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-tertiary);
+  border-radius: 50%;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.meal-edit:active {
+  background-color: rgba(0, 122, 255, 0.12);
+  color: #007aff;
+}
+
+/* Строки состава идут вплотную друг к другу */
+.meal-composition + .meal-composition {
+  margin-top: 2px;
+}
