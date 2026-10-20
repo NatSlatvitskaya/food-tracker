@@ -1160,3 +1160,24 @@ body.is-onboarding {
 .meal-composition + .meal-composition {
   margin-top: 2px;
 }
+
+/* ===============================================
+   Переключение цели в настройках
+   =============================================== */
+
+/* Отключённые сегменты на время запроса к ИИ */
+.segmented-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.segmented-item:disabled:active {
+  opacity: 0.45;
+}
+
+/* Статус пересчёта под переключателем */
+.settings-goal-status {
+  font-size: 13px;
+  font-weight: var(--font-weight-medium);
+  color: #007aff;
+}

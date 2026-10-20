@@ -647,20 +647,25 @@ function initOnboarding() {
 }
 
 /** Сегментированный переключатель «Ваша цель» */
+/** Подсвечивает выбранный сегмент в указанном контейнере */
+function paintSegmented(container, goal) {
+  container.querySelectorAll('.segmented-item').forEach((btn) => {
+    const active = btn.dataset.goal === goal;
+    btn.classList.toggle('active', active);
+    btn.setAttribute('aria-checked', String(active));
+  });
+}
+
 function initGoalPicker() {
-  const buttons = [...$('goal-segmented').querySelectorAll('.segmented-item')];
+  const container = $('goal-segmented');
+  const buttons = [...container.querySelectorAll('.segmented-item')];
 
   const paint = (goal) => {
-    buttons.forEach((btn) => {
-      const active = btn.dataset.goal === goal;
-      btn.classList.toggle('active', active);
-      btn.setAttribute('aria-checked', String(active));
-    });
+    paintSegmented(container, goal);
 
     // Подсказка объясняет, что именно означает выбранная цель
     const meta = GOALS_META[goal] || GOALS_META[DEFAULT_GOAL];
-    const hint = $('goal-hint');
-    if (hint) hint.textContent = meta.hint;
+    $('goal-hint').textContent = meta.hint;
   };
 
   buttons.forEach((btn) => {
@@ -1366,8 +1371,11 @@ function renderAll() {
 
 /** Показывает в настройках, задан ли ключ (сам ключ не раскрываем) */
 function renderSettings() {
-  const meta = GOALS_META[state.profile?.goal];
-  $('settings-goal').textContent = meta ? meta.label : 'не выбрана';
+  const goal = state.profile?.goal || DEFAULT_GOAL;
+  const meta = GOALS_META[goal] || GOALS_META[DEFAULT_GOAL];
+
+  paintSegmented($('settings-goal'), goal);
+  $('settings-goal-hint').textContent = `${meta.label}. ${meta.hint}`;
 
   const key = getApiKey();
   const node = $('settings-key');
@@ -1380,6 +1388,77 @@ function renderSettings() {
   // но целиком он не светится на случай, если кто-то смотрит на экран
   node.textContent = `${key.slice(0, 8)}…${key.slice(-4)}`;
   node.classList.add('is-set');
+}
+
+/**
+ * Переключает цель, не теряя накопленные данные.
+ *
+ * Что происходит:
+ *  1. Актуальный вес и объёмы берутся из последнего замера, а не из онбординга —
+ *     за время похудения цифры изменились, и норма должна считаться по текущим.
+ *  2. ИИ пересчитывает калории и БЖУ под новую цель.
+ *  3. Обновляются ТОЛЬКО профиль и цели. Приёмы пищи и замеры не трогаются,
+ *     поэтому история и графики остаются на месте.
+ */
+async function changeGoal(nextGoal) {
+  const meta = GOALS_META[nextGoal];
+  if (!meta) return;
+  if (state.profile?.goal === nextGoal) return; // уже выбрана
+
+  const container = $('settings-goal');
+  const status = $('settings-goal-status');
+  const buttons = [...container.querySelectorAll('.segmented-item')];
+
+  // Блокируем переключатель на время запроса
+  buttons.forEach((btn) => {
+    btn.disabled = true;
+  });
+  status.classList.remove('hidden');
+  status.textContent = 'ИИ пересчитывает норму…';
+
+  // Актуальные параметры тела: последний замер важнее данных онбординга
+  const last = state.metrics[state.metrics.length - 1];
+  const profile = {
+    ...state.profile,
+    goal: nextGoal,
+    currentWeight: last?.weight ?? state.profile?.currentWeight ?? 70,
+    waist: last?.waist ?? state.profile?.waist ?? 0,
+    hips: last?.hips ?? state.profile?.hips ?? 0,
+    glutes: last?.glutes ?? state.profile?.glutes ?? 0,
+  };
+
+  let goals = null;
+  let failed = false;
+
+  try {
+    const raw = await callModel(buildGoalsPrompt(profile), 300);
+    goals = normalizeGoals(parseModelJson(raw));
+    if (!goals) throw new Error('Модель вернула некорректные значения');
+  } catch (err) {
+    console.error('Пересчёт цели не удался:', err);
+    goals = defaultGoalsFor(nextGoal);
+    failed = true;
+  } finally {
+    buttons.forEach((btn) => {
+      btn.disabled = false;
+    });
+    status.classList.add('hidden');
+  }
+
+  // Сохраняем только профиль и цели — история остаётся нетронутой
+  state.profile = profile;
+  state.goals = goals;
+  save(STORAGE_KEYS.profile, profile);
+  save(STORAGE_KEYS.goals, goals);
+
+  renderSettings();
+  renderAll();
+
+  if (failed) {
+    toast(`Цель: ${meta.label}. Применены значения по умолчанию ${goals.kcal} ккал`, 'info');
+  } else {
+    toast(`Цель: ${meta.label}. Норма ${goals.kcal} ккал`, 'success');
+  }
 }
 
 /**
@@ -1466,6 +1545,13 @@ function initSettings() {
       toast('Ключ обновлён', 'success');
       renderSettings();
     }
+  });
+
+  // Переключение цели без потери прогресса
+  $('settings-goal').addEventListener('click', (event) => {
+    const btn = event.target.closest('.segmented-item');
+    if (!btn || btn.disabled) return;
+    changeGoal(btn.dataset.goal);
   });
 
   $('btn-reset-data').addEventListener('click', (event) => {

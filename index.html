@@ -9,10 +9,10 @@
   <!--
     ВЕРСИОНИРОВАНИЕ КЭША.
     При каждом обновлении style.css или app.js увеличьте число в ?v=
-    у обеих ссылок ниже (сейчас v=6). Иначе Chrome на Android может
+    у обеих ссылок ниже (сейчас v=7). Иначе Chrome на Android может
     показывать старые файлы из кэша.
   -->
-  <link rel="stylesheet" href="style.css?v=6">
+  <link rel="stylesheet" href="style.css?v=7">
 </head>
 <body class="is-onboarding">
 
@@ -306,7 +306,23 @@
       <div class="settings-body">
         <section class="settings-section">
           <h4>Цель</h4>
-          <p class="form-hint" id="settings-goal">не выбрана</p>
+          <p class="form-hint">
+            При смене цели норма КБЖУ пересчитывается по актуальному весу.
+            Приёмы пищи и замеры сохраняются.
+          </p>
+          <div class="segmented" id="settings-goal" role="radiogroup" aria-label="Цель">
+            <button type="button" class="segmented-item" data-goal="lose" role="radio" aria-checked="false">
+              Похудение
+            </button>
+            <button type="button" class="segmented-item" data-goal="maintain" role="radio" aria-checked="false">
+              Поддержание
+            </button>
+            <button type="button" class="segmented-item" data-goal="gain" role="radio" aria-checked="false">
+              Набор массы
+            </button>
+          </div>
+          <p class="form-hint" id="settings-goal-hint">не выбрана</p>
+          <p class="settings-goal-status hidden" id="settings-goal-status">ИИ пересчитывает норму…</p>
         </section>
 
         <section class="settings-section">
@@ -366,6 +382,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=6"></script>
+  <script src="app.js?v=7"></script>
 </body>
 </html>
