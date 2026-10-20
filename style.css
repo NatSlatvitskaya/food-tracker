@@ -806,3 +806,272 @@ body.is-onboarding {
 .toast-success {
   background-color: rgba(0, 122, 60, 0.95);
 }
+
+/* ===============================================
+   Шапка с кнопкой настроек
+   =============================================== */
+
+.screen-header-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+}
+
+.btn-settings {
+  flex-shrink: 0;
+  width: 40px;
+  height: 40px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background-color: var(--color-surface);
+  color: var(--color-text-secondary);
+  border-radius: 50%;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.btn-settings:active {
+  background-color: #e8e8ed;
+  color: var(--color-text-primary);
+}
+
+/* ===============================================
+   Ингредиенты в форме приёма пищи
+   =============================================== */
+
+.ingredients-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+.ingredients-head label {
+  font-size: 14px;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+}
+
+.label-optional {
+  font-size: 12px;
+  font-weight: var(--font-weight-regular);
+  color: var(--color-text-tertiary);
+}
+
+.btn-add-ingredient {
+  flex-shrink: 0;
+  padding: 6px 12px;
+  background-color: rgba(0, 122, 255, 0.1);
+  color: #007aff;
+  font-size: 14px;
+  font-weight: var(--font-weight-semibold);
+  border-radius: var(--radius-full);
+  transition: background-color 0.2s ease;
+}
+
+.btn-add-ingredient:active {
+  background-color: rgba(0, 122, 255, 0.18);
+}
+
+.ingredients {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  margin-top: var(--spacing-xs);
+}
+
+.ingredient-row {
+  display: grid;
+  grid-template-columns: 1fr 84px 32px;
+  gap: var(--spacing-xs);
+  align-items: center;
+}
+
+.ingredient-name,
+.ingredient-grams {
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-surface);
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  font-size: 16px;
+  color: var(--color-text-primary);
+  min-width: 0;
+}
+
+.ingredient-name:focus,
+.ingredient-grams:focus {
+  outline: none;
+  border-color: #007aff;
+  background-color: #ffffff;
+}
+
+.ingredient-grams {
+  text-align: right;
+}
+
+.ingredient-remove {
+  width: 32px;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 22px;
+  line-height: 1;
+  color: var(--color-text-tertiary);
+  border-radius: 50%;
+  transition: background-color 0.2s ease, color 0.2s ease;
+}
+
+.ingredient-remove:active:not(:disabled) {
+  background-color: #ffe8e8;
+  color: #c0392b;
+}
+
+.ingredient-remove:disabled {
+  opacity: 0.25;
+  cursor: default;
+}
+
+.ingredients-total {
+  margin-top: var(--spacing-xs);
+  font-size: 14px;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+  text-align: right;
+}
+
+/* ===============================================
+   Состав в карточке истории
+   =============================================== */
+
+.meal-details {
+  margin-top: var(--spacing-xs);
+}
+
+.meal-details-summary {
+  font-size: 13px;
+  font-weight: var(--font-weight-medium);
+  color: #007aff;
+  cursor: pointer;
+  list-style: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.meal-details-summary::-webkit-details-marker {
+  display: none;
+}
+
+.meal-details-summary::before {
+  content: '▸';
+  font-size: 10px;
+  transition: transform 0.2s ease;
+}
+
+.meal-details[open] .meal-details-summary::before {
+  transform: rotate(90deg);
+}
+
+.meal-composition {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 1.45;
+  color: var(--color-text-secondary);
+}
+
+/* ===============================================
+   Настройки
+   =============================================== */
+
+.settings-body {
+  padding: var(--spacing-lg);
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xl);
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-sm);
+}
+
+.settings-section h4 {
+  font-size: 15px;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.settings-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--spacing-md);
+  padding: var(--spacing-sm) var(--spacing-md);
+  background-color: var(--color-surface);
+  border-radius: var(--radius-sm);
+}
+
+.settings-key {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 13px;
+  color: var(--color-text-tertiary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.settings-key.is-set {
+  color: var(--color-text-primary);
+}
+
+.btn-link {
+  flex-shrink: 0;
+  font-size: 15px;
+  font-weight: var(--font-weight-medium);
+  color: #007aff;
+  padding: 0;
+}
+
+/* ===============================================
+   Опасные действия (сброс данных)
+   =============================================== */
+
+.btn-danger {
+  width: 100%;
+  padding: var(--spacing-md) var(--spacing-lg);
+  background-color: #fff2f2;
+  color: #c0392b;
+  font-size: 16px;
+  font-weight: var(--font-weight-semibold);
+  border-radius: var(--radius-md);
+  transition: background-color 0.2s ease, transform 0.15s ease;
+}
+
+.btn-danger:active {
+  transform: scale(0.99);
+  background-color: #ffe4e4;
+}
+
+.btn-danger-ghost {
+  background-color: transparent;
+  border: 1px solid #f0c8c8;
+}
+
+/* Второе нажатие подтверждения — заметно ярче */
+.btn-danger.is-armed {
+  background-color: #c0392b;
+  color: #ffffff;
+  animation: pulse-danger 1s ease infinite;
+}
+
+.btn-danger-ghost.is-armed {
+  border-color: #c0392b;
+}
+
+@keyframes pulse-danger {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.82; }
+}

@@ -12,8 +12,21 @@
 // Полный адрес эндпоинта. Просто https://openrouter.ai не отвечает на POST —
 // нужен путь /api/v1/chat/completions
 const API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const API_MODEL = 'google/gemini-flash-1.5';
 const API_TIMEOUT_MS = 45000;
+
+/*
+  МОДЕЛИ. Проверяются по порядку: если первая недоступна (модель снята
+  с продажи, нет доступа), запрос повторяется со следующей.
+
+  google/gemini-flash-1.5 больше не существует в каталоге OpenRouter —
+  Google снял линейку 1.5. Актуальный список: openrouter.ai/models
+  Условие для модели: поддержка изображений (input_modalities: image).
+*/
+const API_MODELS = [
+  'google/gemini-2.5-flash',        // основная: быстрая, дешёвая, видит фото
+  'google/gemini-2.5-flash-lite',   // легче и дешевле
+  'google/gemma-4-31b-it:free',     // бесплатный резерв
+];
 
 // Ключ НЕ хранится в коде: он вводится один раз и лежит в localStorage
 const API_KEY_STORAGE = 'tracker.apiKey';
@@ -287,12 +300,11 @@ async function ensureApiKey() {
  * Отправляет сообщения в модель и возвращает текст ответа.
  * content — либо строка, либо массив частей (для фото).
  */
-async function callModel(content, maxTokens = 500) {
-  const apiKey = await ensureApiKey();
-  if (!apiKey) {
-    throw new Error('Нужен ключ OpenRouter');
-  }
-
+/**
+ * Отправляет один запрос к указанной модели.
+ * Возвращает { text } при успехе или бросает ошибку с полем .status.
+ */
+async function requestModel(model, apiKey, content, maxTokens) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
@@ -304,22 +316,33 @@ async function callModel(content, maxTokens = 500) {
       headers: {
         Authorization: `Bearer ${apiKey}`,
         'Content-Type': 'application/json',
-        // OpenRouter просит эти два заголовка для статистики, они необязательны
+        // Необязательные заголовки для статистики OpenRouter
         'HTTP-Referer': location.origin,
         'X-Title': 'Food Tracker',
       },
       body: JSON.stringify({
-        model: API_MODEL,
+        model,
         temperature: 0.2,
         max_tokens: maxTokens,
         messages: [{ role: 'user', content }],
       }),
     });
   } catch (err) {
+    clearTimeout(timer);
+
     if (err.name === 'AbortError') {
-      throw new Error('Модель не ответила за 45 секунд');
+      const timeout = new Error('Модель не ответила за 45 секунд. Попробуйте ещё раз');
+      timeout.status = 'timeout';
+      throw timeout;
     }
-    throw new Error('Нет связи с OpenRouter. Проверьте интернет.');
+
+    // fetch отдаёт TypeError, когда запрос не дошёл или ответ заблокирован CORS
+    const network = new Error(
+      'Запрос не дошёл до OpenRouter. Проверьте интернет и VPN — ' +
+        'некоторые блокировщики рекламы режут запросы к openrouter.ai'
+    );
+    network.status = 'network';
+    throw network;
   } finally {
     clearTimeout(timer);
   }
@@ -332,16 +355,65 @@ async function callModel(content, maxTokens = 500) {
     } catch (_) {
       /* тело не JSON — оставляем пустым */
     }
-    if (response.status === 401) throw new Error('Ключ отклонён (401). Проверьте ключ');
-    if (response.status === 402) throw new Error('Закончились кредиты OpenRouter (402)');
-    if (response.status === 429) throw new Error('Слишком много запросов (429). Подождите минуту');
-    throw new Error(`Ошибка OpenRouter ${response.status}${details ? `: ${details}` : ''}`);
+
+    const error = new Error(details || `HTTP ${response.status}`);
+    error.status = response.status;
+    error.model = model;
+    throw error;
   }
 
   const data = await response.json();
   const text = data?.choices?.[0]?.message?.content;
-  if (!text) throw new Error('Пустой ответ модели');
+  if (!text) {
+    const empty = new Error('Модель вернула пустой ответ');
+    empty.status = 'empty';
+    throw empty;
+  }
   return text;
+}
+
+/**
+ * Пробует модели по очереди. Переключается на следующую, только если
+ * проблема в самой модели (404) или недоступности провайдера (5xx).
+ * Ошибки ключа и баланса не повторяем — они не зависят от модели.
+ */
+async function callModel(content, maxTokens = 500) {
+  const apiKey = await ensureApiKey();
+  if (!apiKey) {
+    throw new Error('Нужен ключ OpenRouter');
+  }
+
+  let lastError = null;
+
+  for (const model of API_MODELS) {
+    try {
+      return await requestModel(model, apiKey, content, maxTokens);
+    } catch (err) {
+      lastError = err;
+
+      if (err.status === 401) {
+        throw new Error('Ключ отклонён. Проверьте, что скопировали его целиком, и войдите в аккаунт OpenRouter');
+      }
+      if (err.status === 402) {
+        throw new Error('На балансе OpenRouter закончились средства');
+      }
+      if (err.status === 429) {
+        throw new Error('Слишком много запросов. Подождите минуту и повторите');
+      }
+
+      // 404 — модель снята с продажи, пробуем следующую
+      // 5xx — сбой у провайдера, тоже имеет смысл повторить с другой моделью
+      const retryable = err.status === 404 || (typeof err.status === 'number' && err.status >= 500);
+      if (!retryable) throw err;
+
+      console.warn(`Модель ${model} недоступна (${err.status}), пробую следующую`);
+    }
+  }
+
+  throw new Error(
+    `Ни одна модель не ответила. Последняя ошибка: ${lastError?.message || 'неизвестно'}. ` +
+      'Актуальные модели: openrouter.ai/models'
+  );
 }
 
 /* =========================================================
@@ -662,6 +734,7 @@ function resetMealForm() {
   state.photoTask = null;
   $('meal-photo-name').textContent = DEFAULT_PHOTO_LABEL;
   setFormError($('form-meal'), '');
+  resetIngredients();
 }
 
 /** Выбор файла: читаем, уменьшаем, показываем имя */
@@ -693,32 +766,133 @@ function handlePhotoChange(event) {
   })();
 }
 
-/** Промпт для распознавания блюда */
-function buildMealPrompt(grams) {
-  return [
-    'Проанализируй фото этого блюда.',
-    `Его общий вес составляет ${grams} грамм.`,
-    'Рассчитай КБЖУ этого приема пищи на основе состава.',
+/**
+ * Промпт для распознавания блюда.
+ * Перечисляем каждый ингредиент с весом — модель считает точнее,
+ * чем по одному общему весу, потому что видит структуру блюда.
+ */
+function buildMealPrompt(ingredients, title, hasPhoto) {
+  const list = ingredients.map((i) => `${i.name} — ${i.grams} г`).join(', ');
+  const total = totalGrams(ingredients);
+
+  const lines = [
+    hasPhoto ? 'Проанализируй фото этого блюда и указанный состав.' : 'Проанализируй состав блюда.',
+    `Блюдо: ${title || 'без названия'}.`,
+    `Состав и вес продуктов: ${list}.`,
+    `Общий вес блюда: ${total} г.`,
+    'Рассчитай КБЖУ всего блюда на основе состава и веса каждого продукта.',
     'Верни ответ СТРОГО в формате JSON без markdown:',
     '{"title": "Название блюда на русском", "calories": 420, "protein": 25, "fat": 12, "carbs": 53}',
-  ].join(' ');
+  ];
+  return lines.join(' ');
 }
 
-/* =========================================================
-   13. ПРИЁМ ПИЩИ: ОТПРАВКА АГЕНТУ
-   ========================================================= */
-
-/**
- * Собирает мультимодальный контент: текст + картинка в base64.
- * Формат image_url с data-url поддерживается OpenRouter.
- */
-function buildMealContent(grams, photoDataUrl) {
-  const parts = [{ type: 'text', text: buildMealPrompt(grams) }];
+/** Собирает мультимодальный контент: текст состава + фото, если есть */
+function buildMealContent(ingredients, title, photoDataUrl) {
+  const parts = [
+    { type: 'text', text: buildMealPrompt(ingredients, title, Boolean(photoDataUrl)) },
+  ];
   if (photoDataUrl) {
     parts.push({ type: 'image_url', image_url: { url: photoDataUrl } });
   }
   return parts;
 }
+
+/* =========================================================
+   12б. ИНГРЕДИЕНТЫ: СТРОКИ ВВОДА
+   ========================================================= */
+
+/** Сумма весов всех ингредиентов */
+function totalGrams(ingredients) {
+  return ingredients.reduce((sum, i) => sum + i.grams, 0);
+}
+
+/** Читает строки ингредиентов из DOM. Пустые строки пропускает */
+function readIngredients() {
+  return [...$('ingredients').querySelectorAll('.ingredient-row')]
+    .map((row) => ({
+      name: row.querySelector('.ingredient-name').value.trim(),
+      grams: Number(row.querySelector('.ingredient-grams').value),
+    }))
+    .filter((i) => i.name && i.grams > 0);
+}
+
+/** Пересчитывает подпись «Итого: N г» */
+function updateIngredientsTotal() {
+  const total = totalGrams(readIngredients());
+  $('ingredients-total').textContent = `Итого: ${total} г`;
+}
+
+/**
+ * Добавляет строку ингредиента.
+ * Удаление доступно, только если строк больше одной —
+ * иначе форма останется пустой без возможности ввода.
+ */
+function addIngredientRow(name = '', grams = '') {
+  const row = el('div', 'ingredient-row');
+
+  const nameInput = el('input', 'ingredient-name');
+  nameInput.type = 'text';
+  nameInput.placeholder = 'Продукт';
+  nameInput.value = name;
+  nameInput.autocomplete = 'off';
+
+  const gramsInput = el('input', 'ingredient-grams');
+  gramsInput.type = 'number';
+  gramsInput.inputMode = 'numeric';
+  gramsInput.min = '1';
+  gramsInput.placeholder = 'г';
+  gramsInput.value = grams;
+
+  const remove = el('button', 'ingredient-remove', '×');
+  remove.type = 'button';
+  remove.setAttribute('aria-label', 'Удалить ингредиент');
+
+  const sync = () => {
+    updateIngredientsTotal();
+    const rows = $('ingredients').querySelectorAll('.ingredient-row');
+    const onlyOne = rows.length <= 1;
+    $('ingredients').querySelectorAll('.ingredient-remove').forEach((btn) => {
+      btn.disabled = onlyOne;
+    });
+  };
+
+  nameInput.addEventListener('input', sync);
+  gramsInput.addEventListener('input', sync);
+
+  remove.addEventListener('click', () => {
+    if ($('ingredients').querySelectorAll('.ingredient-row').length <= 1) return;
+    row.remove();
+    sync();
+
+    // Фокус на следующую разумную строку — чтобы не терять контекст
+    const next = $('ingredients').querySelector('.ingredient-name:last-of-type');
+    if (next) next.focus();
+  });
+
+  // Enter в поле веса добавляет новую строку — удобно на телефоне
+  gramsInput.addEventListener('keydown', (event) => {
+    if (event.key !== 'Enter') return;
+    event.preventDefault();
+    addIngredientRow();
+    const inputs = $('ingredients').querySelectorAll('.ingredient-name');
+    inputs[inputs.length - 1].focus();
+  });
+
+  row.append(nameInput, gramsInput, remove);
+  $('ingredients').appendChild(row);
+  sync();
+}
+
+/** Очищает состав и оставляет одну пустую строку */
+function resetIngredients() {
+  $('ingredients').replaceChildren();
+  addIngredientRow();
+}
+
+/* =========================================================
+   13. ПРИЁМ ПИЩИ: ОТПРАВКА АГЕНТУ
+   ========================================================= */
 
 /** Проверяет и нормализует распознанный приём пищи */
 function normalizeMeal(data) {
@@ -739,21 +913,23 @@ async function handleMealSubmit(event) {
 
   const form = event.target;
   const button = form.querySelector('button[type="submit"]');
-  const grams = Number($('meal-weight').value);
 
   setFormError(form, '');
-  if (!(grams > 0)) {
-    setFormError(form, 'Укажите вес блюда в граммах.');
+
+  const ingredients = readIngredients();
+  if (!ingredients.length) {
+    setFormError(form, 'Добавьте хотя бы один ингредиент с названием и весом.');
     return;
   }
 
+  const nameInput = $('meal-name').value.trim();
   const restore = setButtonLoading(button, 'ИИ анализирует…');
 
   try {
     // Если фото ещё обрабатывается — дождёмся, иначе уйдёт запрос без картинки
     if (state.photoTask) await state.photoTask;
 
-    const content = buildMealContent(grams, state.pendingPhoto?.dataUrl);
+    const content = buildMealContent(ingredients, nameInput, state.pendingPhoto?.dataUrl);
     const raw = await callModel(content, 400);
     const analyzed = normalizeMeal(parseModelJson(raw));
 
@@ -764,8 +940,9 @@ async function handleMealSubmit(event) {
       id: Date.now(),
       date: toISODate(now),
       time: now.toTimeString().slice(0, 5),
-      title: analyzed.title,
-      grams,
+      title: nameInput || analyzed.title,
+      ingredients,
+      grams: totalGrams(ingredients),
       kcal: analyzed.kcal,
       protein: analyzed.protein,
       fats: analyzed.fats,
@@ -781,10 +958,10 @@ async function handleMealSubmit(event) {
 
     closeModal($('modal-add-meal'));
     renderAll();
-    toast(`${analyzed.title}: ${analyzed.kcal} ккал`, 'success');
+    toast(`${analyzed.kcal} ккал · записано`, 'success');
   } catch (err) {
     console.error('Распознавание не удалось:', err);
-    setFormError(form, `${err.message}. Попробуйте ещё раз.`);
+    setFormError(form, err.message);
   } finally {
     restore();
   }
@@ -892,6 +1069,18 @@ function renderMeals(todayMeals) {
     });
     info.appendChild(macros);
 
+    // Состав: свёрнут по умолчанию, чтобы лента не превращалась в простыню
+    if (meal.ingredients?.length) {
+      const details = el('details', 'meal-details');
+      const summary = el('summary', 'meal-details-summary', 'Состав');
+      const composition = el('p', 'meal-composition');
+      composition.textContent = meal.ingredients
+        .map((i) => `${i.name} ${i.grams} г`)
+        .join(' · ');
+      details.append(summary, composition);
+      info.appendChild(details);
+    }
+
     card.append(photo, info);
     list.appendChild(card);
   });
@@ -928,6 +1117,121 @@ function renderAll() {
 }
 
 /* =========================================================
+   15б. НАСТРОЙКИ И СБРОС ДАННЫХ
+   ========================================================= */
+
+/** Показывает в настройках, задан ли ключ (сам ключ не раскрываем) */
+function renderSettings() {
+  const key = getApiKey();
+  const node = $('settings-key');
+  if (!key) {
+    node.textContent = 'не задан';
+    node.classList.remove('is-set');
+    return;
+  }
+  // Показываем только начало и конец — так видно, что ключ тот самый,
+  // но целиком он не светится на случай, если кто-то смотрит на экран
+  node.textContent = `${key.slice(0, 8)}…${key.slice(-4)}`;
+  node.classList.add('is-set');
+}
+
+/**
+ * Удаляет данные пользователя и возвращает приложение на онбординг.
+ * keepKey = true оставляет ключ OpenRouter (частый случай при тестах).
+ */
+function resetAllData({ keepKey = true } = {}) {
+  const keys = [STORAGE_KEYS.profile, STORAGE_KEYS.goals, STORAGE_KEYS.metrics, STORAGE_KEYS.meals];
+  keys.forEach((key) => localStorage.removeItem(key));
+  if (!keepKey) localStorage.removeItem(API_KEY_STORAGE);
+
+  // Сбрасываем состояние в памяти, иначе старые данные останутся в интерфейсе
+  state.profile = null;
+  state.goals = { ...DEFAULT_GOALS };
+  state.metrics = [];
+  state.meals = [];
+  state.pendingPhoto = null;
+  state.photoTask = null;
+
+  closeAllModals();
+  showOnboarding();
+  renderAll();
+  toast(keepKey ? 'Данные сброшены, ключ сохранён' : 'Всё удалено, включая ключ', 'success');
+}
+
+/**
+ * Подтверждение вторым нажатием: первое — предупреждение, второе — действие.
+ * Состояние хранится в data-атрибуте кнопки, поэтому работает и для двух
+ * кнопок сброса одновременно.
+ */
+function confirmTwice(button, question, onConfirm) {
+  const original = button.textContent;
+
+  const disarm = () => {
+    clearTimeout(Number(button.dataset.timer));
+    button.dataset.armed = '0';
+    button.textContent = original;
+    button.classList.remove('is-armed');
+  };
+
+  // Уже взведена — это второе нажатие, выполняем
+  if (button.dataset.armed === '1') {
+    disarm();
+    onConfirm();
+    return;
+  }
+
+  // Первое нажатие — только предупреждаем
+  button.dataset.armed = '1';
+  button.textContent = question;
+  button.classList.add('is-armed');
+
+  // Автосброс, если человек передумал и ничего не нажал
+  button.dataset.timer = String(setTimeout(disarm, 6000));
+
+  // Клик в любом другом месте снимает взвод.
+  // Вешаем на следующем тике: иначе этот же клик сразу сработает как «снаружи».
+  setTimeout(() => {
+    const onOutside = (event) => {
+      if (button.contains(event.target)) return; // клик по самой кнопке — не снаружи
+      document.removeEventListener('click', onOutside, true);
+      if (button.dataset.armed === '1') disarm();
+    };
+    document.addEventListener('click', onOutside, true);
+  }, 0);
+}
+
+function initSettings() {
+  $('btn-settings').addEventListener('click', () => {
+    renderSettings();
+    openModal($('modal-settings'));
+  });
+
+  // Замена ключа: удаляем старый и открываем окно ввода заново
+  $('btn-change-key').addEventListener('click', async () => {
+    localStorage.removeItem(API_KEY_STORAGE);
+    closeModal($('modal-settings'));
+
+    const key = await askForApiKey();
+    if (key) {
+      toast('Ключ обновлён', 'success');
+      renderSettings();
+    }
+  });
+
+  $('btn-reset-data').addEventListener('click', (event) => {
+    confirmTwice(event.currentTarget, 'Точно удалить данные?', () => {
+      resetAllData({ keepKey: true });
+    });
+  });
+
+  $('btn-reset-all').addEventListener('click', (event) => {
+    confirmTwice(event.currentTarget, 'Точно всё удалить?', () => {
+      resetAllData({ keepKey: false });
+    });
+  });
+}
+
+/* =========================================================
    16. ИНИЦИАЛИЗАЦИЯ
    ========================================================= */
 
@@ -936,9 +1240,19 @@ function init() {
   initTabs();
   initOnboarding();
   initModals();
+  initSettings();
+
   $('form-meal').addEventListener('submit', handleMealSubmit);
   $('meal-photo').addEventListener('change', handlePhotoChange);
   $('form-metrics').addEventListener('submit', handleMetricsSubmit);
+
+  $('btn-add-ingredient').addEventListener('click', () => {
+    addIngredientRow();
+    const inputs = $('ingredients').querySelectorAll('.ingredient-name');
+    inputs[inputs.length - 1].focus();
+  });
+
+  resetIngredients();
   renderAll();
 }
 

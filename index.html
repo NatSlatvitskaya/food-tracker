@@ -9,10 +9,10 @@
   <!--
     ВЕРСИОНИРОВАНИЕ КЭША.
     При каждом обновлении style.css или app.js увеличьте число в ?v=
-    у обеих ссылок ниже (сейчас v=3). Иначе Chrome на Android может
+    у обеих ссылок ниже (сейчас v=5). Иначе Chrome на Android может
     показывать старые файлы из кэша.
   -->
-  <link rel="stylesheet" href="style.css?v=3">
+  <link rel="stylesheet" href="style.css?v=5">
 </head>
 <body class="is-onboarding">
 
@@ -65,9 +65,18 @@
   <!-- Вкладка "Главная" -->
   <section id="screen-home" class="screen" aria-label="Главная">
     <div class="container">
-      <header class="screen-header">
-        <time id="current-date"></time>
-        <h2 id="greeting">Добрый день!</h2>
+      <header class="screen-header screen-header-row">
+        <div>
+          <time id="current-date"></time>
+          <h2 id="greeting">Добрый день!</h2>
+        </div>
+        <button class="btn-settings" id="btn-settings" type="button" aria-label="Настройки">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="12" cy="12" r="3"></circle>
+            <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+          </svg>
+        </button>
       </header>
 
       <div class="kbzhu-card">
@@ -237,15 +246,61 @@
           </label>
         </div>
         <div class="form-group">
-          <label for="meal-name">Название блюда</label>
-          <input type="text" id="meal-name" name="meal-name" placeholder="Например, овсянка с ягодами">
+          <label for="meal-name">Название блюда <span class="label-optional">необязательно</span></label>
+          <input type="text" id="meal-name" name="meal-name" placeholder="ИИ придумает сам, если оставить пустым">
         </div>
+
         <div class="form-group">
-          <label for="meal-weight">Вес блюда (г)</label>
-          <input type="number" id="meal-weight" name="meal-weight" step="1" min="1" required>
+          <div class="ingredients-head">
+            <label id="ingredients-label">Состав и вес</label>
+            <button class="btn-add-ingredient" id="btn-add-ingredient" type="button">+ Ингредиент</button>
+          </div>
+          <p class="form-hint">
+            Укажите каждый продукт отдельно — так КБЖУ точнее, чем по общему весу блюда.
+          </p>
+          <div class="ingredients" id="ingredients" role="group" aria-labelledby="ingredients-label"></div>
         </div>
+
+        <p class="ingredients-total" id="ingredients-total">Итого: 0 г</p>
         <button type="submit" class="btn-primary">Отправить агенту</button>
       </form>
+    </div>
+  </div>
+
+  <!-- Шторка: настройки -->
+  <div class="modal" id="modal-settings" role="dialog" aria-labelledby="modal-settings-title" aria-hidden="true">
+    <div class="modal-backdrop" data-close-modal></div>
+    <div class="modal-content">
+      <header class="modal-header">
+        <h3 id="modal-settings-title">Настройки</h3>
+        <button class="modal-close" type="button" aria-label="Закрыть" data-close-modal>×</button>
+      </header>
+
+      <div class="settings-body">
+        <section class="settings-section">
+          <h4>Ключ OpenRouter</h4>
+          <p class="form-hint">Хранится только на этом устройстве.</p>
+          <div class="settings-row">
+            <code class="settings-key" id="settings-key">не задан</code>
+            <button class="btn-link" id="btn-change-key" type="button">Заменить</button>
+          </div>
+        </section>
+
+        <section class="settings-section">
+          <h4>Сброс данных</h4>
+          <p class="form-hint">
+            Удаляет профиль, приёмы пищи и замеры с этого устройства. Ключ остаётся.
+            После сброса снова откроется онбординг.
+          </p>
+          <button class="btn-danger" id="btn-reset-data" type="button">Сбросить все данные</button>
+        </section>
+
+        <section class="settings-section">
+          <h4>Полный сброс</h4>
+          <p class="form-hint">Удаляет всё, включая ключ OpenRouter.</p>
+          <button class="btn-danger btn-danger-ghost" id="btn-reset-all" type="button">Сбросить всё и удалить ключ</button>
+        </section>
+      </div>
     </div>
   </div>
 
@@ -279,6 +334,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=3"></script>
+  <script src="app.js?v=5"></script>
 </body>
 </html>
