@@ -78,6 +78,32 @@ const GOALS_META = {
 
 const DEFAULT_GOAL = 'maintain';
 
+/*
+  КАТЕГОРИИ ПРИЁМОВ ПИЩИ для диаграммы на Главной.
+  Категория определяется по времени записи, а не выбором пользователя —
+  так не нужно ничего спрашивать при добавлении еды.
+
+  Окна: [from, to). Всё, что не попало в первые три, становится перекусом —
+  ночь до 5 утра и поздний вечер после 23.
+*/
+const MEAL_CATEGORIES = [
+  { key: 'breakfast', label: 'Завтрак', icon: '\u2600\ufe0f', color: '#34c759', from: 5, to: 11 },
+  { key: 'lunch',     label: 'Обед',    icon: '\ud83c\udf7d\ufe0f', color: '#ff9f0a', from: 11, to: 16 },
+  { key: 'dinner',    label: 'Ужин',    icon: '\ud83c\udf19', color: '#007aff', from: 16, to: 23 },
+  { key: 'snack',     label: 'Перекус', icon: '\ud83c\udf4e', color: '#af52de', from: 23, to: 5 },
+];
+
+/** Категория по времени «HH:MM». Ночь и поздний вечер — перекус */
+function mealCategoryFor(time) {
+  const hour = Number(String(time || '').slice(0, 2));
+  if (!Number.isFinite(hour)) return 'snack';
+
+  const found = MEAL_CATEGORIES.find(
+    (c) => c.key !== 'snack' && hour >= c.from && hour < c.to
+  );
+  return found ? found.key : 'snack';
+}
+
 /** Резервные цели под выбранную цель по весу */
 function defaultGoalsFor(goal) {
   const meta = GOALS_META[goal] || GOALS_META[DEFAULT_GOAL];
@@ -1080,9 +1106,11 @@ async function handleMealSubmit(event) {
     if (!analyzed) throw new Error('Не удалось распознать приём пищи');
 
     const now = new Date();
+    const time = now.toTimeString().slice(0, 5);
     const record = {
       date: toISODate(now),
-      time: now.toTimeString().slice(0, 5),
+      time,
+      category: mealCategoryFor(time),
       title: nameInput || analyzed.title,
       ingredients,
       drinks,
@@ -1102,6 +1130,9 @@ async function handleMealSubmit(event) {
         record.id = state.meals[index].id;
         record.date = state.meals[index].date;
         record.time = state.meals[index].time;
+        // Категорию не пересчитываем: правка состава не должна
+        // переносить утренний завтрак в ужин
+        record.category = state.meals[index].category || record.category;
         state.meals[index] = record;
       } else {
         record.id = Date.now();
@@ -1351,6 +1382,86 @@ function renderProgress() {
   });
 }
 
+/**
+ * Суммирует калории по категориям и рисует кольцо с легендой.
+ *
+ * Кольцо — один div с conic-gradient: сектора задаются CSS-переменной
+ * --donut-segments строкой вида "#34c759 0% 25%, #ff9f0a 25% 60%".
+ * Это дешевле SVG и не требует пересоздания DOM при каждом обновлении.
+ */
+function renderMealSplit(todayMeals) {
+  const byCategory = {};
+  MEAL_CATEGORIES.forEach((c) => {
+    byCategory[c.key] = { kcal: 0 };
+  });
+
+  todayMeals.forEach((meal) => {
+    // У старых записей поля category нет — определяем по времени
+    const key = meal.category || mealCategoryFor(meal.time);
+    const bucket = byCategory[key] || byCategory.snack;
+    bucket.kcal += meal.kcal;
+  });
+
+  const total = MEAL_CATEGORIES.reduce((sum, c) => sum + byCategory[c.key].kcal, 0);
+
+  $('donut-total').textContent = total;
+  $('donut-empty').classList.toggle('hidden', total > 0);
+
+  const donut = $('donut');
+  const legend = $('donut-legend');
+  legend.replaceChildren();
+
+  // Пусто за день: серое кольцо, легенды нет
+  if (!total) {
+    donut.style.setProperty('--donut-segments', '#e5e5ea');
+    donut.setAttribute('aria-label', 'За сегодня калорий нет');
+    return;
+  }
+
+  // Сектора: проценты накапливаем, чтобы на стыках не было щелей
+  const stops = [];
+  let cursor = 0;
+
+  MEAL_CATEGORIES.forEach((cat) => {
+    const kcal = byCategory[cat.key].kcal;
+    if (!kcal) return;
+    const start = cursor;
+    cursor += (kcal / total) * 100;
+    stops.push(`${cat.color} ${start.toFixed(2)}% ${cursor.toFixed(2)}%`);
+  });
+
+  // Округление может оставить зазор до 100% — дотягиваем последний сектор
+  if (stops.length) {
+    stops[stops.length - 1] = stops[stops.length - 1].replace(/[\d.]+%$/, '100%');
+  }
+
+  donut.style.setProperty('--donut-segments', stops.join(', '));
+
+  const parts = MEAL_CATEGORIES.filter((c) => byCategory[c.key].kcal).map(
+    (c) => `${c.label} ${Math.round((byCategory[c.key].kcal / total) * 100)}%`
+  );
+  donut.setAttribute('aria-label', `Распределение: ${parts.join(', ')}`);
+
+  // Легенда: все четыре категории, пустые приглушены
+  MEAL_CATEGORIES.forEach((cat) => {
+    const kcal = byCategory[cat.key].kcal;
+    const share = Math.round((kcal / total) * 100);
+
+    const item = el('li', kcal ? '' : 'is-empty');
+
+    const dot = el('span', 'donut-dot');
+    dot.style.backgroundColor = cat.color;
+
+    item.append(
+      dot,
+      el('span', 'donut-legend-label', `${cat.icon} ${cat.label}`),
+      el('span', 'donut-legend-percent', `${share}%`)
+    );
+
+    legend.appendChild(item);
+  });
+}
+
 function renderAll() {
   const today = toISODate();
   const todayMeals = state.meals.filter((m) => m.date === today);
@@ -1362,6 +1473,7 @@ function renderAll() {
   renderMacro('fats', totals.fats);
   renderMacro('carbs', totals.carbs);
   renderMeals(todayMeals);
+  renderMealSplit(todayMeals);
   renderProgress();
 }
 

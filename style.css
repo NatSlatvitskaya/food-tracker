@@ -1181,3 +1181,144 @@ body.is-onboarding {
   font-weight: var(--font-weight-medium);
   color: #007aff;
 }
+
+/* ===============================================
+   Распределение калорий по приёмам пищи
+   =============================================== */
+
+.meal-split {
+  margin-top: var(--spacing-lg);
+  padding: var(--spacing-lg);
+  background-color: var(--color-surface);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-sm);
+}
+
+.meal-split h3 {
+  font-size: 16px;
+  font-weight: var(--font-weight-semibold);
+  margin-bottom: var(--spacing-md);
+}
+
+.donut-wrap {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-lg);
+}
+
+/*
+  Кольцо на conic-gradient: сектора задаются в процентах через CSS-переменную
+  --segments, которую формирует JS. Без SVG и без библиотек.
+  Маска вырезает середину — получается donut.
+*/
+.donut {
+  position: relative;
+  flex-shrink: 0;
+  width: 116px;
+  height: 116px;
+  border-radius: 50%;
+  background: conic-gradient(
+    var(--donut-segments, #e5e5ea)
+  );
+  transition: background 0.4s ease;
+}
+
+/* Пустая середина кольца */
+.donut::after {
+  content: '';
+  position: absolute;
+  inset: 22px;
+  background-color: var(--color-surface);
+  border-radius: 50%;
+}
+
+.donut-hole {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  z-index: 1;
+  pointer-events: none;
+}
+
+.donut-total {
+  font-size: 22px;
+  font-weight: var(--font-weight-bold);
+  line-height: 1.1;
+  color: var(--color-text-primary);
+}
+
+.donut-total-label {
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-tertiary);
+}
+
+/* Легенда */
+.donut-legend {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-xs);
+  list-style: none;
+}
+
+.donut-legend li {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-xs);
+  font-size: 13px;
+  line-height: 1.3;
+  color: var(--color-text-primary);
+}
+
+.donut-dot {
+  flex-shrink: 0;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+}
+
+.donut-legend-label {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.donut-legend-percent {
+  flex-shrink: 0;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Приглушённая строка легенды, если в этой категории ничего не съедено */
+.donut-legend li.is-empty .donut-legend-label,
+.donut-legend li.is-empty .donut-legend-percent {
+  color: var(--color-text-tertiary);
+}
+
+.donut-empty {
+  margin-top: var(--spacing-sm);
+  font-size: 13px;
+  text-align: center;
+  color: var(--color-text-tertiary);
+}
+
+/* Мелкие экраны: кольцо над легендой */
+@media (max-width: 360px) {
+  .donut-wrap {
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--spacing-md);
+  }
+
+  .donut {
+    align-self: center;
+  }
+}

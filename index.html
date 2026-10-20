@@ -9,10 +9,10 @@
   <!--
     ВЕРСИОНИРОВАНИЕ КЭША.
     При каждом обновлении style.css или app.js увеличьте число в ?v=
-    у обеих ссылок ниже (сейчас v=7). Иначе Chrome на Android может
+    у обеих ссылок ниже (сейчас v=8). Иначе Chrome на Android может
     показывать старые файлы из кэша.
   -->
-  <link rel="stylesheet" href="style.css?v=7">
+  <link rel="stylesheet" href="style.css?v=8">
 </head>
 <body class="is-onboarding">
 
@@ -149,6 +149,24 @@
           </div>
         </div>
       </div>
+
+      <!-- Распределение калорий по приёмам пищи -->
+      <section class="meal-split" id="meal-split-card">
+        <h3>Распределение калорий</h3>
+
+        <div class="donut-wrap">
+          <div class="donut" id="donut" role="img" aria-label="Распределение калорий по приёмам пищи">
+            <div class="donut-hole">
+              <span class="donut-total" id="donut-total">0</span>
+              <span class="donut-total-label">ккал</span>
+            </div>
+          </div>
+
+          <ul class="donut-legend" id="donut-legend"></ul>
+        </div>
+
+        <p class="donut-empty hidden" id="donut-empty">Пока ничего не съедено за сегодня</p>
+      </section>
 
       <button class="btn-add-meal" id="btn-add-meal" type="button">
         <span class="icon">+</span>
@@ -382,6 +400,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
 </body>
 </html>
