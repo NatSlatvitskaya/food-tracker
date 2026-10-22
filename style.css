@@ -13,9 +13,14 @@
   
   /* Градиенты для кнопок и прогресс-баров */
   --gradient-primary: linear-gradient(135deg, #007aff 0%, #5ac8fa 100%);
-  --gradient-protein: linear-gradient(90deg, #ff6b6b 0%, #ff8e53 100%);
-  --gradient-fats: linear-gradient(90deg, #feca57 0%, #ff9ff3 100%);
-  --gradient-carbs: linear-gradient(90deg, #48dbfb 0%, #0abde3 100%);
+
+  /* Макросы: сплошные цвета. Градиенты рядом сливались друг с другом */
+  --color-protein: #ff7a5c;
+  --color-fats: #ffbf3f;
+  --color-carbs: #8b7cf6;
+  --color-protein-soft: rgba(255, 122, 92, 0.12);
+  --color-fats-soft: rgba(255, 191, 63, 0.14);
+  --color-carbs-soft: rgba(139, 124, 246, 0.12);
   
   /* Скругления */
   --radius-sm: 12px;
@@ -1111,141 +1116,260 @@ body.is-onboarding {
 }
 
 /* ===============================================
-   Главная: единый блок калорий и макросов
+   Дашборд калорий: цель, прогресс и отметка цели
    =============================================== */
 
-.summary-card {
-  padding: var(--spacing-xl) var(--spacing-lg);
+.dash-card {
+  padding: var(--spacing-lg) var(--spacing-lg) var(--spacing-md);
   background-color: var(--color-surface);
-  border-radius: 28px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.summary-ring-wrap {
-  position: relative;
-  width: 128px;
-  height: 128px;
-}
-
-.summary-ring {
-  transform: rotate(-90deg);
-}
-
-.summary-ring-bg {
-  fill: none;
-  stroke: #e5e5ea;
-  stroke-width: 9;
-}
-
-.summary-ring-fill {
-  fill: none;
-  stroke: url(#gradient-ring);
-  stroke-width: 9;
-  stroke-linecap: round;
-  stroke-dasharray: 377;
-  stroke-dashoffset: 377;
-  transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1);
-}
-
-/* Число калорий по центру кольца */
-.summary-center {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 1px;
-}
-
-.summary-kcal {
-  font-size: 30px;
-  font-weight: var(--font-weight-bold);
-  line-height: 1;
-  letter-spacing: -0.5px;
-  color: var(--color-text-primary);
-  font-variant-numeric: tabular-nums;
-}
-
-.summary-kcal-label {
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-}
-
-/* Сколько осталось до нормы */
-.summary-hint {
-  margin-top: var(--spacing-sm);
-  font-size: 13px;
-  color: var(--color-text-secondary);
-  text-align: center;
-}
-
-.summary-hint.is-over {
-  color: #ff3b30;
-}
-
-/* Полосы макросов под кольцом */
-.summary-macros {
-  width: 100%;
-  margin-top: var(--spacing-lg);
+  border-radius: 24px;
   display: flex;
   flex-direction: column;
   gap: var(--spacing-md);
 }
 
-.macro-bar {
+.dash-top {
   display: flex;
-  flex-direction: column;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: var(--spacing-sm);
+}
+
+.dash-eaten {
+  display: flex;
+  align-items: baseline;
   gap: 6px;
 }
 
-.macro-header {
-  display: flex;
-  align-items: baseline;
-  justify-content: space-between;
-  font-size: 13px;
-}
-
-.macro-name {
-  font-weight: var(--font-weight-medium);
+.dash-eaten-value {
+  font-size: 40px;
+  font-weight: var(--font-weight-bold);
+  line-height: 1;
+  letter-spacing: -1px;
   color: var(--color-text-primary);
-}
-
-.macro-values {
-  color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
-.macro-values strong {
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
+.dash-eaten-unit {
+  font-size: 15px;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-tertiary);
 }
 
-.progress-bar {
-  height: 6px;
-  background-color: rgba(0, 0, 0, 0.06);
+.dash-goal {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+}
+
+.dash-goal-label {
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--color-text-tertiary);
+}
+
+.dash-goal-value {
+  font-size: 16px;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Линейная шкала: дорожка, заливка и отметка цели */
+.dash-track {
+  position: relative;
+  height: 10px;
+  margin-top: var(--spacing-xs);
   border-radius: var(--radius-full);
+  background-color: rgba(0, 0, 0, 0.06);
+}
+
+.dash-fill {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  border-radius: var(--radius-full);
+  background-color: #007aff;
+  transition: width 0.6s cubic-bezier(0.4, 0, 0.2, 1), background-color 0.3s ease;
+}
+
+/* Отметка цели — финишная точка справа от шкалы */
+.dash-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.dash-marker-dot {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  background-color: #ffffff;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18), inset 0 0 0 3px #007aff;
+  transition: box-shadow 0.3s ease;
+}
+
+.dash-scale {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-status {
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+/* Состояния дашборда: меняют цвет заливки и отметки */
+.dash-card[data-state="near"] .dash-fill {
+  background-color: #ff9f0a;
+}
+
+.dash-card[data-state="reached"] .dash-fill {
+  background-color: #34c759;
+}
+
+.dash-card[data-state="reached"] .dash-marker-dot {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18), inset 0 0 0 3px #34c759;
+}
+
+.dash-card[data-state="reached"] .dash-status {
+  color: #34c759;
+  font-weight: var(--font-weight-semibold);
+}
+
+.dash-card[data-state="over"] .dash-fill {
+  background-color: #ff3b30;
+}
+
+.dash-card[data-state="over"] .dash-marker-dot {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.18), inset 0 0 0 3px #ff3b30;
+}
+
+.dash-card[data-state="over"] .dash-status {
+  color: #ff3b30;
+  font-weight: var(--font-weight-semibold);
+}
+
+/* Пустой день: шкала спит, отметка серая */
+.dash-card[data-state="empty"] .dash-marker-dot {
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.12), inset 0 0 0 3px #c7c7cc;
+}
+
+
+/* ===============================================
+   Блок питания: плитки макросов и шкалы
+   =============================================== */
+
+.nutrition-card {
+  margin-top: var(--spacing-lg);
+  padding: var(--spacing-lg);
+  background-color: var(--color-surface);
+  border-radius: 24px;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-lg);
+}
+
+/* Три плитки в ряд — как в Samsung Health */
+.nutrition-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: var(--spacing-xs);
+}
+
+.nutrition-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: var(--spacing-sm) var(--spacing-sm) 10px;
+  background-color: #ffffff;
+  border-radius: 16px;
+}
+
+.tile-name {
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-secondary);
+  letter-spacing: 0.2px;
+}
+
+.tile-value {
+  display: flex;
+  align-items: baseline;
+  gap: 2px;
+  line-height: 1.1;
+}
+
+.tile-value strong {
+  font-size: 20px;
+  font-weight: var(--font-weight-bold);
+  color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.4px;
+}
+
+.tile-unit {
+  font-size: 12px;
+  font-weight: var(--font-weight-medium);
+  color: var(--color-text-tertiary);
+}
+
+.tile-goal {
+  font-size: 11px;
+  color: var(--color-text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.tile-bar {
+  margin-top: 5px;
+  height: 4px;
+  border-radius: var(--radius-full);
+  background-color: rgba(0, 0, 0, 0.06);
   overflow: hidden;
 }
 
-.progress-bar-fill {
+.tile-bar-fill {
   height: 100%;
   border-radius: var(--radius-full);
   transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 }
 
-.progress-bar.protein .progress-bar-fill {
-  background: var(--gradient-protein);
+.nutrition-tile.protein .tile-bar-fill {
+  background: var(--color-protein);
 }
 
-.progress-bar.fats .progress-bar-fill {
-  background: var(--gradient-fats);
+.nutrition-tile.fats .tile-bar-fill {
+  background: var(--color-fats);
 }
 
-.progress-bar.carbs .progress-bar-fill {
-  background: var(--gradient-carbs);
+.nutrition-tile.carbs .tile-bar-fill {
+  background: var(--color-carbs);
+}
+
+/* Подсветка названия макроса его цветом */
+.nutrition-tile.protein .tile-name {
+  color: var(--color-protein);
+}
+
+.nutrition-tile.fats .tile-name {
+  color: #c98f00;
+}
+
+.nutrition-tile.carbs .tile-name {
+  color: var(--color-carbs);
 }
 
 /* ===============================================
@@ -1292,16 +1416,18 @@ body.is-onboarding {
 .split-bar {
   display: flex;
   width: 100%;
-  height: 6px;
+  height: 5px;
   border-radius: var(--radius-full);
   overflow: hidden;
-  background-color: rgba(0, 0, 0, 0.06);
+  background-color: rgba(0, 0, 0, 0.05);
+  gap: 2px;
   transition: opacity 0.25s ease;
 }
 
 /* Нет еды за день: полоска спит, но остаётся на месте */
 .split-bar.is-empty {
   background-color: rgba(0, 0, 0, 0.05);
+  gap: 0;
 }
 
 .split-bar.is-empty .split-segment {
@@ -1314,15 +1440,15 @@ body.is-onboarding {
 }
 
 .split-segment.protein {
-  background: var(--gradient-protein);
+  background: var(--color-protein);
 }
 
 .split-segment.fats {
-  background: var(--gradient-fats);
+  background: var(--color-fats);
 }
 
 .split-segment.carbs {
-  background: var(--gradient-carbs);
+  background: var(--color-carbs);
 }
 
 /* ===============================================
@@ -1449,6 +1575,28 @@ body.is-onboarding {
   font-size: 15px;
   font-weight: var(--font-weight-semibold);
   color: var(--color-text-primary);
+}
+
+/* Откуда взялись проценты: из цели или вручную */
+.split-source {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 2px 8px;
+  font-size: 11px;
+  font-weight: var(--font-weight-medium);
+  color: #007aff;
+  background-color: rgba(0, 122, 255, 0.1);
+  border-radius: var(--radius-full);
+}
+
+.split-source.is-manual {
+  color: #c98f00;
+  background-color: rgba(255, 191, 63, 0.18);
+}
+
+.btn-split-reset {
+  align-self: flex-end;
+  margin-top: var(--spacing-xs);
 }
 
 .slider-row {

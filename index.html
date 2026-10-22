@@ -9,10 +9,10 @@
   <!--
     ВЕРСИОНИРОВАНИЕ КЭША.
     При каждом обновлении style.css или app.js увеличьте число в ?v=
-    у обеих ссылок ниже (сейчас v=10). Иначе Chrome на Android может
+    у обеих ссылок ниже (сейчас v=12). Иначе Chrome на Android может
     показывать старые файлы из кэша.
   -->
-  <link rel="stylesheet" href="style.css?v=10">
+  <link rel="stylesheet" href="style.css?v=12">
 </head>
 <body class="is-onboarding">
 
@@ -95,63 +95,60 @@
         </button>
       </header>
 
-      <!-- Единый центр: калории и макросы в одной карточке -->
-      <section class="summary-card" aria-label="Калории и макросы за сегодня">
-        <div class="summary-ring-wrap">
-          <svg class="summary-ring" width="128" height="128" viewBox="0 0 140 140" aria-hidden="true">
-            <defs>
-              <linearGradient id="gradient-ring" x1="0%" y1="0%" x2="100%" y2="100%">
-                <stop offset="0%" style="stop-color:#007aff;stop-opacity:1" />
-                <stop offset="100%" style="stop-color:#5ac8fa;stop-opacity:1" />
-              </linearGradient>
-            </defs>
-            <circle class="summary-ring-bg" cx="70" cy="70" r="60" />
-            <circle class="summary-ring-fill" id="ring-fill" cx="70" cy="70" r="60" />
-          </svg>
-
-          <div class="summary-center">
-            <span class="summary-kcal" id="calorie-current">0</span>
-            <span class="summary-kcal-label">из <span id="calorie-target">1800</span> ккал</span>
+      <!-- Дашборд калорий: цель, прогресс и отметка цели -->
+      <section class="dash-card" id="dash-card" aria-label="Прогресс по калориям">
+        <div class="dash-top">
+          <div class="dash-eaten">
+            <span class="dash-eaten-value" id="calorie-current">0</span>
+            <span class="dash-eaten-unit">ккал</span>
+          </div>
+          <div class="dash-goal">
+            <span class="dash-goal-label">Цель</span>
+            <span class="dash-goal-value"><span id="calorie-target">1800</span> ккал</span>
           </div>
         </div>
 
-        <p class="summary-hint" id="calorie-left">осталось 1800 ккал</p>
-
-        <div class="summary-macros">
-          <div class="macro-bar">
-            <div class="macro-header">
-              <span class="macro-name">Белки</span>
-              <span class="macro-values"><strong id="protein-consumed">0</strong> / <span id="protein-goal">90</span> г</span>
-            </div>
-            <div class="progress-bar protein">
-              <div class="progress-bar-fill" id="protein-bar" style="width: 0%"></div>
-            </div>
-          </div>
-
-          <div class="macro-bar">
-            <div class="macro-header">
-              <span class="macro-name">Жиры</span>
-              <span class="macro-values"><strong id="fats-consumed">0</strong> / <span id="fats-goal">60</span> г</span>
-            </div>
-            <div class="progress-bar fats">
-              <div class="progress-bar-fill" id="fats-bar" style="width: 0%"></div>
-            </div>
-          </div>
-
-          <div class="macro-bar">
-            <div class="macro-header">
-              <span class="macro-name">Углеводы</span>
-              <span class="macro-values"><strong id="carbs-consumed">0</strong> / <span id="carbs-goal">180</span> г</span>
-            </div>
-            <div class="progress-bar carbs">
-              <div class="progress-bar-fill" id="carbs-bar" style="width: 0%"></div>
-            </div>
+        <div class="dash-track" id="dash-track" role="progressbar"
+             aria-valuemin="0" aria-valuenow="0" aria-valuemax="100" aria-label="Прогресс к цели">
+          <div class="dash-fill" id="dash-fill" style="width: 0%"></div>
+          <div class="dash-marker" id="dash-marker" style="left: 100%">
+            <span class="dash-marker-dot"></span>
           </div>
         </div>
+
+        <div class="dash-scale" aria-hidden="true">
+          <span>0</span>
+          <span id="dash-scale-goal">1800</span>
+        </div>
+
+        <p class="dash-status" id="calorie-left">осталось 1800 ккал</p>
       </section>
 
-      <!-- Шкалы распределения БЖУ -->
-      <section class="split-card" aria-label="Распределение БЖУ">
+      <!-- Питание: граммы БЖУ и шкалы распределения -->
+      <section class="nutrition-card" aria-label="Питание">
+        <div class="nutrition-tiles">
+          <div class="nutrition-tile carbs">
+            <span class="tile-name">Углеводы</span>
+            <span class="tile-value"><strong id="carbs-consumed">0</strong><span class="tile-unit">г</span></span>
+            <span class="tile-goal">из <span id="carbs-goal">180</span> г</span>
+            <div class="tile-bar"><div class="tile-bar-fill" id="carbs-bar" style="width: 0%"></div></div>
+          </div>
+
+          <div class="nutrition-tile fats">
+            <span class="tile-name">Жиры</span>
+            <span class="tile-value"><strong id="fats-consumed">0</strong><span class="tile-unit">г</span></span>
+            <span class="tile-goal">из <span id="fats-goal">60</span> г</span>
+            <div class="tile-bar"><div class="tile-bar-fill" id="fats-bar" style="width: 0%"></div></div>
+          </div>
+
+          <div class="nutrition-tile protein">
+            <span class="tile-name">Белки</span>
+            <span class="tile-value"><strong id="protein-consumed">0</strong><span class="tile-unit">г</span></span>
+            <span class="tile-goal">из <span id="protein-goal">90</span> г</span>
+            <div class="tile-bar"><div class="tile-bar-fill" id="protein-bar" style="width: 0%"></div></div>
+          </div>
+        </div>
+
         <div class="split-row">
           <div class="split-head">
             <span class="split-title">Фактическое</span>
@@ -403,7 +400,10 @@
             Сумма всегда 100%. При смене цели ползунки сбрасываются к её пресету.
           </p>
 
-          <p class="split-kcal-line">Норма: <strong id="split-kcal">0</strong> ккал</p>
+          <p class="split-kcal-line">
+            Норма: <strong id="split-kcal">0</strong> ккал
+            <span class="split-source" id="split-source">По цели</span>
+          </p>
 
           <div class="slider-row">
             <div class="slider-head">
@@ -442,6 +442,10 @@
           </div>
 
           <p class="split-sum-line">Сумма: <strong id="split-sum">100%</strong></p>
+
+          <button class="btn-link btn-split-reset hidden" id="btn-split-reset" type="button">
+            Сбросить к цели
+          </button>
         </section>
 
         <section class="settings-section">
@@ -501,6 +505,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=10"></script>
+  <script src="app.js?v=12"></script>
 </body>
 </html>

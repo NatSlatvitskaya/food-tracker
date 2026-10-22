@@ -37,7 +37,30 @@ const STORAGE_KEYS = {
   goals: 'tracker.goals',
   metrics: 'tracker.metrics',
   meals: 'tracker.meals',
+  // Заметки по дням: { 'YYYY-MM-DD': 'текст' }
+  notes: 'tracker.notes',
 };
+
+/**
+ * СТРУКТУРА ДАННЫХ ПО ДНЯМ
+ *
+ * Все записи привязаны к дате в формате YYYY-MM-DD — ключу дня.
+ * Это основа для архива и для переноса в Telegram-бота: историю за любой
+ * день можно получить одним запросом по ключу, без перебора всей базы.
+ *
+ *   tracker.meals   — массив приёмов пищи, у каждого поле date
+ *   tracker.metrics — массив замеров, у каждого поле date
+ *   tracker.notes   — объект { 'YYYY-MM-DD': 'текст заметки' }
+ *
+ * Индекс state.dayIndex строится из tracker.meals при загрузке и
+ * после каждого изменения, сами данные в localStorage не дублируются.
+ */
+const DATE_KEY_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+/** Проверка и нормализация ключа дня */
+function dayKey(value) {
+  return DATE_KEY_RE.test(String(value || '')) ? String(value) : null;
+}
 
 /*
   ЦЕЛИ ПО ВЕСУ. Для каждой — своя формулировка для ИИ и резервные значения
@@ -56,7 +79,7 @@ const GOALS_META = {
     hint: 'Дефицит 15–20% от нормы поддержания, белки выше обычного',
     instruction:
       'Цель — снижение веса. Рассчитай норму поддержания и создай дефицит 15-20%. ' +
-      'Распределение калорий: белки 25%, жиры 30%, углеводы 45%.',
+      'Распределение калорий: белки 35%, жиры 30%, углеводы 35%.',
   },
   maintain: {
     label: 'Поддержание формы',
@@ -64,7 +87,7 @@ const GOALS_META = {
     hint: 'Баланс трат и потребления, без дефицита и профицита',
     instruction:
       'Цель — удержание веса. Норма равна суточным тратам, без дефицита и профицита. ' +
-      'Распределение калорий: белки 20%, жиры 30%, углеводы 50%.',
+      'Распределение калорий: белки 25%, жиры 30%, углеводы 45%.',
   },
   gain: {
     label: 'Набор мышечной массы',
@@ -84,9 +107,9 @@ const DEFAULT_GOAL = 'maintain';
   Граммы всегда вычисляются из процентов, поэтому шкала и цели не расходятся.
 */
 const MACRO_SPLIT_BY_GOAL = {
-  lose:     { protein: 25, fats: 30, carbs: 45 },
-  maintain: { protein: 20, fats: 30, carbs: 50 },
-  gain:     { protein: 30, fats: 25, carbs: 45 },
+  lose:     { protein: 35, fats: 30, carbs: 35 }, // низкоуглеводный дефицит
+  maintain: { protein: 25, fats: 30, carbs: 45 }, // здоровый баланс
+  gain:     { protein: 30, fats: 25, carbs: 45 }, // качественный профицит
 };
 
 /** Калорийность грамма и подпись для каждого макронутриента */
@@ -149,19 +172,27 @@ function defaultSplitFor(goal) {
  */
 function gramsFromSplit(kcal, split) {
   return {
-    protein: roundTo((kcal * split.protein) / 100 / 4, 0),
-    fats: roundTo((kcal * split.fats) / 100 / 9, 0),
-    carbs: roundTo((kcal * split.carbs) / 100 / 4, 0),
+    protein: roundTo((kcal * split.protein) / 100 / 4, 1),
+    fats: roundTo((kcal * split.fats) / 100 / 9, 1),
+    carbs: roundTo((kcal * split.carbs) / 100 / 4, 1),
   };
 }
 
 /** Полный объект целей: калории, граммы и проценты */
-function goalsFromSplit(kcal, split) {
+/**
+ * Собирает цели из калорий и процентов.
+ *
+ * splitSource отвечает за подпись в настройках:
+ *   'goal'   — проценты взяты из пресета цели (по умолчанию)
+ *   'manual' — пользователь двигал ползунки сам
+ */
+function goalsFromSplit(kcal, split, splitSource = 'goal') {
   const cleanSplit = { ...split };
   return {
     kcal: roundTo(kcal, 0),
     ...gramsFromSplit(kcal, cleanSplit),
     split: cleanSplit,
+    splitSource,
   };
 }
 
@@ -223,11 +254,28 @@ function distributeSplit(changed, value, current) {
  * У пользователей прошлых версий поля split нет — восстанавливаем его
  * из граммов, чтобы ползунки открылись на их реальных пропорциях.
  */
+/** Старые пресеты v11 — если сохранённые проценты совпадают, это не ручная правка */
+const LEGACY_SPLITS = [
+  { protein: 25, fats: 30, carbs: 45 },
+  { protein: 20, fats: 30, carbs: 50 },
+  { protein: 30, fats: 25, carbs: 45 },
+];
+
+function isLegacyPreset(split) {
+  return LEGACY_SPLITS.some(
+    (p) => p.protein === split.protein && p.fats === split.fats && p.carbs === split.carbs
+  );
+}
+
 function normalizeGoalsShape(goals, goal) {
   const kcal = roundTo(goals?.kcal, 0) || GOALS_META[goal]?.defaults?.kcal || 2000;
 
   if (goals?.split && MACRO_KEYS.every((k) => Number.isFinite(goals.split[k]))) {
-    return goalsFromSplit(kcal, goals.split);
+    // Старый пресет без ручной правки — переводим на новый пресет цели
+    if (goals.splitSource !== 'manual' && isLegacyPreset(goals.split)) {
+      return goalsFromSplit(kcal, defaultSplitFor(goal), 'goal');
+    }
+    return goalsFromSplit(kcal, goals.split, goals.splitSource || 'manual');
   }
 
   const kcalFromMacros =
@@ -449,7 +497,7 @@ function indexMealsByDay(meals) {
   const index = {};
 
   (meals || []).forEach((meal) => {
-    const day = /^\d{4}-\d{2}-\d{2}$/.test(meal?.date || '') ? meal.date : 'unknown';
+    const day = dayKey(meal?.date) || 'unknown';
     if (!index[day]) index[day] = [];
     index[day].push(meal);
   });
@@ -462,10 +510,42 @@ function indexMealsByDay(meals) {
   return index;
 }
 
+/** Заметка за день. Пустая строка удаляет запись. */
+function saveDayNote(day, text) {
+  const key = dayKey(day);
+  if (!key) return false;
+
+  const notes = load(STORAGE_KEYS.notes, {});
+  const clean = String(text || '').trim().slice(0, 500);
+
+  if (clean) {
+    notes[key] = clean;
+  } else {
+    delete notes[key];
+  }
+  return save(STORAGE_KEYS.notes, notes);
+}
+
+/** Заметка за конкретный день или null */
+function getDayNote(day) {
+  const key = dayKey(day);
+  if (!key) return null;
+  const notes = load(STORAGE_KEYS.notes, {});
+  return notes[key] ?? null;
+}
+
 /** История за конкретный день: приёмы пищи и суммарные КБЖУ */
 function mealsForDay(day) {
-  const list = state.dayIndex?.[day] || [];
-  return { day, meals: list, totals: sumMeals(list) };
+  const key = dayKey(day);
+  const list = (key && state.dayIndex?.[key]) || [];
+  const metric = state.metrics.find((m) => dayKey(m.date) === key) || null;
+  return {
+    day: key,
+    meals: list,
+    totals: sumMeals(list),
+    metric,
+    note: key ? getDayNote(key) : null,
+  };
 }
 
 /** Список дней, по которым есть записи, от новых к старым */
@@ -484,19 +564,41 @@ function loadState() {
     ? normalizeGoalsShape(storedGoals, state.goalDraft)
     : defaultGoalsFor(state.goalDraft);
 
+  // Записываем пересчитанные граммы обратно: иначе в хранилище остаются
+  // устаревшие значения, и внешние читатели (например, бот) увидят нули
+  if (storedGoals) {
+    const current = JSON.stringify(storedGoals);
+    if (current !== JSON.stringify(state.goals)) {
+      save(STORAGE_KEYS.goals, state.goals);
+    }
+  }
+
   state.metrics = load(STORAGE_KEYS.metrics, []);
   state.meals = load(STORAGE_KEYS.meals, []);
   state.dayIndex = indexMealsByDay(state.meals);
 }
 
 /** Замер за сегодня заменяет предыдущий, иначе добавляется новый */
+/**
+ * Один замер на один день: ищем запись по ключу даты, а не только
+ * последнюю. Так новый замер за сегодня заменит существующий, даже если
+ * массив уже содержит более поздние даты.
+ */
 function upsertMetric(entry) {
-  const last = state.metrics[state.metrics.length - 1];
-  if (last && last.date === entry.date) {
-    state.metrics[state.metrics.length - 1] = entry;
+  const day = dayKey(entry.date);
+  if (!day) return;
+
+  const index = state.metrics.findIndex((m) => dayKey(m.date) === day);
+  const record = { ...entry, date: day };
+
+  if (index >= 0) {
+    state.metrics[index] = record;
   } else {
-    state.metrics.push(entry);
+    state.metrics.push(record);
   }
+
+  // Держим массив отсортированным по дате — удобно для архива
+  state.metrics.sort((a, b) => String(a.date).localeCompare(String(b.date)));
   save(STORAGE_KEYS.metrics, state.metrics);
 }
 
@@ -938,10 +1040,10 @@ function buildGoalsPrompt(profile) {
     `желаемый вес ${profile.targetWeight} кг.`,
     `Главная цель: ${meta.label}.`,
     meta.instruction,
-    'Рассчитай суточную норму калорий по формуле Миффлина-Сан Жеора.',
-    'Переведи проценты в граммы: белки и углеводы — 4 ккал на грамм, жиры — 9 ккал на грамм.',
+    'Рассчитай ТОЛЬКО суточную норму калорий по формуле Миффлина-Сан Жеора.',
+    'Белки, жиры и углеводы рассчитывать не нужно — их распределит приложение по цели.',
     'Верни ответ СТРОГО в формате JSON без markdown и без лишних слов:',
-    '{"calories": 1750, "protein": 100, "fat": 58, "carbs": 206}',
+    '{"calories": 1874}',
   ].join(' ');
 }
 
@@ -951,30 +1053,22 @@ function buildGoalsPrompt(profile) {
  * Модель отдаёт граммы — из них восстанавливаем проценты калорий,
  * чтобы ползунки и «Целевая» шкала показывали ту же картину.
  */
+/**
+ * Разбирает ответ модели по целям.
+ *
+ * Модель считает только КАЛОРИИ (Миффлин-Сан Жеор плюс дефицит/профицит
+ * под цель). Проценты БЖУ берём из пресета цели, а не из ответа модели:
+ * иначе норма расходится с целью, ведь модель каждый раз возвращает
+ * свои собственные цифры.
+ */
 function normalizeGoals(data, goal) {
   const kcal = round(data.calories);
-  const protein = round(data.protein);
-  const fats = round(data.fat ?? data.fats);
-  const carbs = round(data.carbs);
 
-  const valid =
-    kcal >= 800 && kcal <= 6000 &&
-    protein > 0 && fats > 0 && carbs > 0;
-
+  // Калории — единственное, что нужно от модели
+  const valid = kcal >= 800 && kcal <= 6000;
   if (!valid) return null;
 
-  const split = calorieSplit(protein, fats, carbs);
-  const rounded = {
-    protein: Math.round(split.protein),
-    fats: Math.round(split.fats),
-    carbs: 0,
-  };
-  rounded.carbs = 100 - rounded.protein - rounded.fats;
-
-  // Если раскладка получилась вырожденной — берём пресет цели
-  const usable = rounded.protein > 0 && rounded.fats > 0 && rounded.carbs > 0;
-
-  return goalsFromSplit(kcal, usable ? rounded : defaultSplitFor(goal));
+  return goalsFromSplit(kcal, defaultSplitFor(goal), 'goal');
 }
 
 /**
@@ -1519,35 +1613,69 @@ function renderGreeting() {
   $('greeting').textContent = greetingByHour(now.getHours());
 }
 
+/**
+ * Дашборд калорий: линейная шкала с отметкой цели.
+ *
+ * Состояния:
+ *  - empty    — ничего не съедено: шкала пустая, отметка цели в конце
+ *  - progress — до 90% нормы: идём к цели, подпись «осталось N ккал»
+ *  - near     — 90–100%: почти у цели, подпись «почти у цели»
+ *  - reached  — ровно в норме или чуть выше (до +5%): цель взята
+ *  - over     — больше +5%: перебор, шкала уходит за отметку
+ *
+ * Шкала показывает долю от нормы, но не выходит за 100% по ширине:
+ * при переборе заливка доходит до конца, а подпись говорит про перебор.
+ */
 function renderCalories(totals) {
   const goal = Number(state.goals.kcal) || 0;
   const eaten = Number(totals.kcal) || 0;
-  const ratio = goal ? Math.min(eaten / goal, 1) : 0;
 
   $('calorie-current').textContent = eaten;
   $('calorie-target').textContent = goal;
+  $('dash-scale-goal').textContent = goal;
 
-  const ring = $('ring-fill');
-  ring.style.strokeDasharray = RING_LENGTH;
-  ring.style.strokeDashoffset = RING_LENGTH * (1 - ratio);
-
-  // Подпись под кольцом: остаток до нормы или перебор
-  const left = goal - eaten;
+  const card = $('dash-card');
+  const fill = $('dash-fill');
+  const track = $('dash-track');
   const hint = $('calorie-left');
 
   if (!goal) {
+    card.dataset.state = 'empty';
+    fill.style.width = '0%';
     hint.textContent = 'Норма не рассчитана';
-    hint.classList.remove('is-over');
+    track.setAttribute('aria-valuenow', '0');
     return;
   }
 
-  if (left >= 0) {
-    hint.textContent = `осталось ${left} ккал`;
-    hint.classList.remove('is-over');
+  const ratio = eaten / goal;
+  const percent = Math.min(ratio * 100, 100);
+  const left = goal - eaten;
+
+  fill.style.width = `${percent.toFixed(1)}%`;
+  track.setAttribute('aria-valuenow', String(Math.round(percent)));
+
+  let stateName;
+  let text;
+
+  if (eaten === 0) {
+    stateName = 'empty';
+    text = `осталось ${goal} ккал`;
+  } else if (ratio > 1.05) {
+    stateName = 'over';
+    text = `перебор на ${Math.abs(left)} ккал`;
+  } else if (ratio >= 1) {
+    stateName = 'reached';
+    text = 'цель выполнена';
+  } else if (ratio >= 0.9) {
+    stateName = 'near';
+    text = `почти у цели, осталось ${left} ккал`;
   } else {
-    hint.textContent = `перебор на ${Math.abs(left)} ккал`;
-    hint.classList.add('is-over');
+    stateName = 'progress';
+    text = `осталось ${left} ккал`;
   }
+
+  card.dataset.state = stateName;
+  hint.textContent = text;
 }
 
 function renderMacro(key, value) {
@@ -1827,7 +1955,7 @@ async function changeGoal(nextGoal) {
   // Сохраняем только профиль и цели — история остаётся нетронутой
   // Смена цели сбрасывает ручные проценты к пресету новой цели:
   // иначе ползунки конфликтовали бы с рекомендациями под цель
-  goals = goalsFromSplit(goals.kcal, defaultSplitFor(nextGoal));
+  goals = goalsFromSplit(goals.kcal, defaultSplitFor(nextGoal), 'goal');
 
   state.profile = profile;
   state.goals = goals;
@@ -1913,6 +2041,22 @@ function confirmTwice(button, question, onConfirm) {
   }, 0);
 }
 
+/**
+ * Возвращает проценты БЖУ к пресету цели.
+ * Калории не трогаем — они уже посчитаны под пользователя.
+ */
+function resetSplitToGoal() {
+  const goal = state.profile?.goal || DEFAULT_GOAL;
+  const kcal = Number(state.goals.kcal) || 0;
+
+  state.goals = goalsFromSplit(kcal, defaultSplitFor(goal), 'goal');
+  save(STORAGE_KEYS.goals, state.goals);
+
+  renderSplitControls();
+  renderTargetSplit();
+  toast(`Проценты БЖУ сброшены к цели: ${GOALS_META[goal].label}`, 'success');
+}
+
 /* =========================================================
    ПОЛЗУНКИ БЖУ В НАСТРОЙКАХ
    ========================================================= */
@@ -1945,6 +2089,19 @@ function renderSplitControls() {
   const sum = MACRO_KEYS.reduce((acc, key) => acc + split[key], 0);
   $('split-sum').textContent = `${sum}%`;
   $('split-sum').classList.toggle('is-bad', sum !== 100);
+
+  // Откуда взялись проценты: из цели или настроены вручную
+  const manual = state.goals.splitSource === 'manual';
+  const goalLabel = GOALS_META[state.profile?.goal]?.label || 'цели';
+
+  const sourceNode = $('split-source');
+  sourceNode.textContent = manual
+    ? 'Настроено вручную'
+    : `По цели: ${goalLabel}`;
+  sourceNode.classList.toggle('is-manual', manual);
+
+  // Кнопка сброса нужна только когда раскладка ручная
+  $('btn-split-reset').classList.toggle('hidden', !manual);
 }
 
 /**
@@ -1955,8 +2112,9 @@ function handleSliderInput(key, value) {
   const nextSplit = distributeSplit(key, value, currentSplit());
   const kcal = Number(state.goals.kcal) || 0;
 
-  // Граммы пересчитываем из процентов — так цели и шкала не расходятся
-  state.goals = goalsFromSplit(kcal, nextSplit);
+  // Граммы пересчитываем из процентов — так цели и шкала не расходятся.
+  // Источник 'manual': пользователь настроил раскладку под себя
+  state.goals = goalsFromSplit(kcal, nextSplit, 'manual');
   save(STORAGE_KEYS.goals, state.goals);
 
   renderSplitControls();
@@ -1970,6 +2128,8 @@ function initSplitSliders() {
       handleSliderInput(key, input.value);
     });
   });
+
+  $('btn-split-reset').addEventListener('click', resetSplitToGoal);
 }
 
 function initSettings() {
