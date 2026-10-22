@@ -9,10 +9,10 @@
   <!--
     ВЕРСИОНИРОВАНИЕ КЭША.
     При каждом обновлении style.css или app.js увеличьте число в ?v=
-    у обеих ссылок ниже (сейчас v=8). Иначе Chrome на Android может
+    у обеих ссылок ниже (сейчас v=9). Иначе Chrome на Android может
     показывать старые файлы из кэша.
   -->
-  <link rel="stylesheet" href="style.css?v=8">
+  <link rel="stylesheet" href="style.css?v=9">
 </head>
 <body class="is-onboarding">
 
@@ -149,6 +149,78 @@
           </div>
         </div>
       </div>
+
+      <!-- Шкалы распределения БЖУ -->
+      <section class="split-card" aria-label="Распределение БЖУ">
+        <div class="split-row">
+          <div class="split-head">
+            <span class="split-title">Фактическое</span>
+            <span class="split-note" id="split-actual-note">Пока нет данных о еде</span>
+          </div>
+          <div class="split-bar is-empty" id="split-actual-bar">
+            <div class="split-segment protein" id="split-actual-protein" style="width: 0%"></div>
+            <div class="split-segment fats" id="split-actual-fats" style="width: 0%"></div>
+            <div class="split-segment carbs" id="split-actual-carbs" style="width: 0%"></div>
+          </div>
+        </div>
+
+        <div class="split-row">
+          <div class="split-head">
+            <span class="split-title">Целевое</span>
+            <span class="split-note" id="split-target-note">—</span>
+          </div>
+          <div class="split-bar">
+            <div class="split-segment protein" id="split-target-protein" style="width: 0%"></div>
+            <div class="split-segment fats" id="split-target-fats" style="width: 0%"></div>
+            <div class="split-segment carbs" id="split-target-carbs" style="width: 0%"></div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Подробные сведения о питании -->
+      <details class="nutrition-details" id="nutrition-details">
+        <summary class="nutrition-summary">
+          <span>Подробные сведения о питании</span>
+          <svg class="nutrition-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"
+               aria-hidden="true"><path d="m6 9 6 6 6-6"></path></svg>
+        </summary>
+
+        <div class="nutrition-body">
+          <div class="micro-row">
+            <div class="micro-head">
+              <span class="micro-name">Клетчатка</span>
+              <span class="micro-values">
+                <strong id="micro-fiber-value">нет данных</strong> /
+                <span id="micro-fiber-goal">25 г</span>
+              </span>
+            </div>
+            <div class="micro-bar"><div class="micro-bar-fill fiber" id="micro-fiber-bar" style="width: 0%"></div></div>
+          </div>
+
+          <div class="micro-row">
+            <div class="micro-head">
+              <span class="micro-name">Натрий</span>
+              <span class="micro-values">
+                <strong id="micro-sodium-value">нет данных</strong> /
+                <span id="micro-sodium-goal">1500 мг</span>
+              </span>
+            </div>
+            <div class="micro-bar"><div class="micro-bar-fill sodium" id="micro-sodium-bar" style="width: 0%"></div></div>
+          </div>
+
+          <div class="micro-row">
+            <div class="micro-head">
+              <span class="micro-name">Сахар</span>
+              <span class="micro-values">
+                <strong id="micro-sugar-value">нет данных</strong> /
+                <span id="micro-sugar-goal">40 г</span>
+              </span>
+            </div>
+            <div class="micro-bar"><div class="micro-bar-fill sugar" id="micro-sugar-bar" style="width: 0%"></div></div>
+          </div>
+        </div>
+      </details>
 
       <!-- Распределение калорий по приёмам пищи -->
       <section class="meal-split" id="meal-split-card">
@@ -344,6 +416,53 @@
         </section>
 
         <section class="settings-section">
+          <h4>Распределение БЖУ</h4>
+          <p class="form-hint">
+            Сумма всегда 100%. При смене цели ползунки сбрасываются к её пресету.
+          </p>
+
+          <p class="split-kcal-line">Норма: <strong id="split-kcal">0</strong> ккал</p>
+
+          <div class="slider-row">
+            <div class="slider-head">
+              <span class="slider-name">Белки</span>
+              <span class="slider-values">
+                <strong id="slider-protein-value">0%</strong> ·
+                <span id="slider-protein-grams">0 г</span>
+              </span>
+            </div>
+            <input type="range" class="slider protein" id="slider-protein"
+                   min="0" max="100" step="1" value="20" aria-label="Доля белков в процентах">
+          </div>
+
+          <div class="slider-row">
+            <div class="slider-head">
+              <span class="slider-name">Жиры</span>
+              <span class="slider-values">
+                <strong id="slider-fats-value">0%</strong> ·
+                <span id="slider-fats-grams">0 г</span>
+              </span>
+            </div>
+            <input type="range" class="slider fats" id="slider-fats"
+                   min="0" max="100" step="1" value="30" aria-label="Доля жиров в процентах">
+          </div>
+
+          <div class="slider-row">
+            <div class="slider-head">
+              <span class="slider-name">Углеводы</span>
+              <span class="slider-values">
+                <strong id="slider-carbs-value">0%</strong> ·
+                <span id="slider-carbs-grams">0 г</span>
+              </span>
+            </div>
+            <input type="range" class="slider carbs" id="slider-carbs"
+                   min="0" max="100" step="1" value="50" aria-label="Доля углеводов в процентах">
+          </div>
+
+          <p class="split-sum-line">Сумма: <strong id="split-sum">100%</strong></p>
+        </section>
+
+        <section class="settings-section">
           <h4>Ключ OpenRouter</h4>
           <p class="form-hint">Хранится только на этом устройстве.</p>
           <div class="settings-row">
@@ -400,6 +519,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=8"></script>
+  <script src="app.js?v=9"></script>
 </body>
 </html>
