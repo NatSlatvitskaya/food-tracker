@@ -1520,15 +1520,34 @@ function renderGreeting() {
 }
 
 function renderCalories(totals) {
-  const goal = state.goals.kcal;
-  const ratio = goal ? Math.min(totals.kcal / goal, 1) : 0;
+  const goal = Number(state.goals.kcal) || 0;
+  const eaten = Number(totals.kcal) || 0;
+  const ratio = goal ? Math.min(eaten / goal, 1) : 0;
 
-  $('calorie-current').textContent = totals.kcal;
+  $('calorie-current').textContent = eaten;
   $('calorie-target').textContent = goal;
 
   const ring = $('ring-fill');
   ring.style.strokeDasharray = RING_LENGTH;
   ring.style.strokeDashoffset = RING_LENGTH * (1 - ratio);
+
+  // Подпись под кольцом: остаток до нормы или перебор
+  const left = goal - eaten;
+  const hint = $('calorie-left');
+
+  if (!goal) {
+    hint.textContent = 'Норма не рассчитана';
+    hint.classList.remove('is-over');
+    return;
+  }
+
+  if (left >= 0) {
+    hint.textContent = `осталось ${left} ккал`;
+    hint.classList.remove('is-over');
+  } else {
+    hint.textContent = `перебор на ${Math.abs(left)} ккал`;
+    hint.classList.add('is-over');
+  }
 }
 
 function renderMacro(key, value) {
@@ -1643,86 +1662,6 @@ function renderProgress() {
 }
 
 /**
- * Суммирует калории по категориям и рисует кольцо с легендой.
- *
- * Кольцо — один div с conic-gradient: сектора задаются CSS-переменной
- * --donut-segments строкой вида "#34c759 0% 25%, #ff9f0a 25% 60%".
- * Это дешевле SVG и не требует пересоздания DOM при каждом обновлении.
- */
-function renderMealSplit(todayMeals) {
-  const byCategory = {};
-  MEAL_CATEGORIES.forEach((c) => {
-    byCategory[c.key] = { kcal: 0 };
-  });
-
-  todayMeals.forEach((meal) => {
-    // У старых записей поля category нет — определяем по времени
-    const key = meal.category || mealCategoryFor(meal.time);
-    const bucket = byCategory[key] || byCategory.snack;
-    bucket.kcal += meal.kcal;
-  });
-
-  const total = MEAL_CATEGORIES.reduce((sum, c) => sum + byCategory[c.key].kcal, 0);
-
-  $('donut-total').textContent = total;
-  $('donut-empty').classList.toggle('hidden', total > 0);
-
-  const donut = $('donut');
-  const legend = $('donut-legend');
-  legend.replaceChildren();
-
-  // Пусто за день: серое кольцо, легенды нет
-  if (!total) {
-    donut.style.setProperty('--donut-segments', '#e5e5ea');
-    donut.setAttribute('aria-label', 'За сегодня калорий нет');
-    return;
-  }
-
-  // Сектора: проценты накапливаем, чтобы на стыках не было щелей
-  const stops = [];
-  let cursor = 0;
-
-  MEAL_CATEGORIES.forEach((cat) => {
-    const kcal = byCategory[cat.key].kcal;
-    if (!kcal) return;
-    const start = cursor;
-    cursor += (kcal / total) * 100;
-    stops.push(`${cat.color} ${start.toFixed(2)}% ${cursor.toFixed(2)}%`);
-  });
-
-  // Округление может оставить зазор до 100% — дотягиваем последний сектор
-  if (stops.length) {
-    stops[stops.length - 1] = stops[stops.length - 1].replace(/[\d.]+%$/, '100%');
-  }
-
-  donut.style.setProperty('--donut-segments', stops.join(', '));
-
-  const parts = MEAL_CATEGORIES.filter((c) => byCategory[c.key].kcal).map(
-    (c) => `${c.label} ${Math.round((byCategory[c.key].kcal / total) * 100)}%`
-  );
-  donut.setAttribute('aria-label', `Распределение: ${parts.join(', ')}`);
-
-  // Легенда: все четыре категории, пустые приглушены
-  MEAL_CATEGORIES.forEach((cat) => {
-    const kcal = byCategory[cat.key].kcal;
-    const share = Math.round((kcal / total) * 100);
-
-    const item = el('li', kcal ? '' : 'is-empty');
-
-    const dot = el('span', 'donut-dot');
-    dot.style.backgroundColor = cat.color;
-
-    item.append(
-      dot,
-      el('span', 'donut-legend-label', `${cat.icon} ${cat.label}`),
-      el('span', 'donut-legend-percent', `${share}%`)
-    );
-
-    legend.appendChild(item);
-  });
-}
-
-/**
  * Шкала «Фактическое»: доли съеденных БЖУ в калориях.
  * Ширины секторов складываются в 100%, поэтому полоса всегда полная.
  */
@@ -1733,8 +1672,7 @@ function renderActualSplit(totals) {
 
   bar.classList.toggle('is-empty', empty);
   MACRO_KEYS.forEach((key) => {
-    const segment = $(`split-actual-${key}`);
-    segment.style.width = empty ? '0%' : `${split[key].toFixed(2)}%`;
+    $(`split-actual-${key}`).style.width = empty ? '0%' : `${split[key].toFixed(2)}%`;
   });
 
   $('split-actual-note').textContent = empty
@@ -1767,9 +1705,8 @@ function renderMicros(totals) {
 
     const valueNode = $(`micro-${key}-value`);
     const barNode = $(`micro-${key}-bar`);
-    const goalNode = $(`micro-${key}-goal`);
 
-    goalNode.textContent = `${meta.goal} ${meta.unit}`;
+    $(`micro-${key}-goal`).textContent = `${meta.goal} ${meta.unit}`;
 
     if (!count) {
       valueNode.textContent = 'нет данных';
@@ -1799,7 +1736,6 @@ function renderAll() {
   renderMacro('fats', totals.fats);
   renderMacro('carbs', totals.carbs);
   renderMeals(todayMeals);
-  renderMealSplit(todayMeals);
   renderActualSplit(totals);
   renderTargetSplit();
   renderMicros(totals);

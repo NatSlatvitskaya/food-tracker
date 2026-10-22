@@ -224,15 +224,20 @@ input {
   justify-content: center;
   gap: var(--spacing-xs);
   padding: var(--spacing-md) var(--spacing-lg);
-  background-color: var(--color-surface);
-  color: var(--color-text-primary);
-  font-size: 17px;
+  background: var(--gradient-primary);
+  color: #ffffff;
+  font-size: 16px;
   font-weight: var(--font-weight-semibold);
   border-radius: var(--radius-full);
-  box-shadow: var(--shadow-sm);
-  transition: background-color 0.2s ease;
+  box-shadow: 0 4px 14px rgba(0, 122, 255, 0.22);
+  transition: transform 0.15s ease, box-shadow 0.2s ease;
   width: 100%;
-  margin-top: var(--spacing-lg);
+  margin-top: var(--spacing-xl);
+}
+
+.btn-add-meal:active {
+  transform: scale(0.98);
+  box-shadow: 0 2px 8px rgba(0, 122, 255, 0.18);
 }
 
 .btn-add-meal .icon {
@@ -262,142 +267,6 @@ input {
 
 .btn-photo-upload:active {
   background-color: #e8e8ed;
-}
-
-/* ===============================================
-   КБЖУ карточка
-   =============================================== */
-
-.kbzhu-card {
-  background-color: var(--color-surface);
-  border-radius: var(--radius-lg);
-  padding: var(--spacing-lg);
-  box-shadow: var(--shadow-sm);
-}
-
-.kbzhu-main {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  margin-bottom: var(--spacing-xl);
-}
-
-.kbzhu-main h3 {
-  font-size: 20px;
-  font-weight: var(--font-weight-semibold);
-  margin-bottom: var(--spacing-md);
-}
-
-.calorie-progress {
-  position: relative;
-  width: 140px;
-  height: 140px;
-}
-
-.progress-ring {
-  transform: rotate(-90deg);
-}
-
-.progress-ring-bg {
-  fill: none;
-  stroke: #e5e5ea;
-  stroke-width: 8;
-}
-
-.progress-ring-fill {
-  fill: none;
-  stroke: url(#gradient-ring);
-  stroke-width: 8;
-  stroke-linecap: round;
-  stroke-dasharray: 377;
-  stroke-dashoffset: 117; /* 1240/1800 ≈ 69% → 377 × (1 − 0.69) */
-  transition: stroke-dashoffset 0.5s ease;
-}
-
-.calorie-value {
-  position: absolute;
-  top: 50%;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  text-align: center;
-  font-weight: var(--font-weight-semibold);
-}
-
-.calorie-value .current {
-  font-size: 28px;
-  color: var(--color-text-primary);
-}
-
-.calorie-value .separator {
-  font-size: 20px;
-  color: var(--color-text-tertiary);
-  margin: 0 4px;
-}
-
-.calorie-value .target {
-  font-size: 20px;
-  color: var(--color-text-secondary);
-}
-
-/* ===============================================
-   Макронутриенты (полоски)
-   =============================================== */
-
-.kbzhu-bars {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-md);
-}
-
-.macro-bar {
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-}
-
-.macro-header {
-  display: flex;
-  justify-content: space-between;
-  font-size: 14px;
-}
-
-.macro-name {
-  font-weight: var(--font-weight-medium);
-  color: var(--color-text-primary);
-}
-
-.macro-values {
-  color: var(--color-text-secondary);
-}
-
-.macro-values strong {
-  font-weight: var(--font-weight-semibold);
-  color: var(--color-text-primary);
-}
-
-.progress-bar {
-  height: 8px;
-  background-color: #e5e5ea;
-  border-radius: var(--radius-full);
-  overflow: hidden;
-}
-
-.progress-bar-fill {
-  height: 100%;
-  border-radius: var(--radius-full);
-  transition: width 0.5s ease;
-}
-
-.progress-bar.protein .progress-bar-fill {
-  background: var(--gradient-protein);
-}
-
-.progress-bar.fats .progress-bar-fill {
-  background: var(--gradient-fats);
-}
-
-.progress-bar.carbs .progress-bar-fill {
-  background: var(--gradient-carbs);
 }
 
 /* ===============================================
@@ -1183,144 +1052,200 @@ body.is-onboarding {
 }
 
 /* ===============================================
-   Распределение калорий по приёмам пищи
+   Карточка истории: заголовок и кнопка правки
    =============================================== */
 
-.meal-split {
-  margin-top: var(--spacing-lg);
-  padding: var(--spacing-lg);
-  background-color: var(--color-surface);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+.meal-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--spacing-xs);
 }
 
-.meal-split h3 {
-  font-size: 16px;
-  font-weight: var(--font-weight-semibold);
-  margin-bottom: var(--spacing-md);
+.meal-head .meal-name {
+  flex: 1;
+  min-width: 0;
 }
 
-.donut-wrap {
+.meal-edit {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
   display: flex;
   align-items: center;
-  gap: var(--spacing-lg);
-}
-
-/*
-  Кольцо на conic-gradient: сектора задаются в процентах через CSS-переменную
-  --segments, которую формирует JS. Без SVG и без библиотек.
-  Маска вырезает середину — получается donut.
-*/
-.donut {
-  position: relative;
-  flex-shrink: 0;
-  width: 116px;
-  height: 116px;
+  justify-content: center;
+  color: var(--color-text-tertiary);
   border-radius: 50%;
-  background: conic-gradient(
-    var(--donut-segments, #e5e5ea)
-  );
-  transition: background 0.4s ease;
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
-/* Пустая середина кольца */
-.donut::after {
-  content: '';
-  position: absolute;
-  inset: 22px;
+.meal-edit:active {
+  background-color: rgba(0, 122, 255, 0.12);
+  color: #007aff;
+}
+
+/* Строки состава идут вплотную друг к другу */
+.meal-composition + .meal-composition {
+  margin-top: 2px;
+}
+
+/* ===============================================
+   Переключение цели в настройках
+   =============================================== */
+
+/* Отключённые сегменты на время запроса к ИИ */
+.segmented-item:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.segmented-item:disabled:active {
+  opacity: 0.45;
+}
+
+/* Статус пересчёта под переключателем */
+.settings-goal-status {
+  font-size: 13px;
+  font-weight: var(--font-weight-medium);
+  color: #007aff;
+}
+
+/* ===============================================
+   Главная: единый блок калорий и макросов
+   =============================================== */
+
+.summary-card {
+  padding: var(--spacing-xl) var(--spacing-lg);
   background-color: var(--color-surface);
-  border-radius: 50%;
+  border-radius: 28px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
 }
 
-.donut-hole {
+.summary-ring-wrap {
+  position: relative;
+  width: 128px;
+  height: 128px;
+}
+
+.summary-ring {
+  transform: rotate(-90deg);
+}
+
+.summary-ring-bg {
+  fill: none;
+  stroke: #e5e5ea;
+  stroke-width: 9;
+}
+
+.summary-ring-fill {
+  fill: none;
+  stroke: url(#gradient-ring);
+  stroke-width: 9;
+  stroke-linecap: round;
+  stroke-dasharray: 377;
+  stroke-dashoffset: 377;
+  transition: stroke-dashoffset 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Число калорий по центру кольца */
+.summary-center {
   position: absolute;
   inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  z-index: 1;
-  pointer-events: none;
+  gap: 1px;
 }
 
-.donut-total {
-  font-size: 22px;
+.summary-kcal {
+  font-size: 30px;
   font-weight: var(--font-weight-bold);
-  line-height: 1.1;
+  line-height: 1;
+  letter-spacing: -0.5px;
   color: var(--color-text-primary);
+  font-variant-numeric: tabular-nums;
 }
 
-.donut-total-label {
-  font-size: 11px;
-  font-weight: var(--font-weight-medium);
+.summary-kcal-label {
+  font-size: 12px;
   color: var(--color-text-tertiary);
 }
 
-/* Легенда */
-.donut-legend {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: var(--spacing-xs);
-  list-style: none;
+/* Сколько осталось до нормы */
+.summary-hint {
+  margin-top: var(--spacing-sm);
+  font-size: 13px;
+  color: var(--color-text-secondary);
+  text-align: center;
 }
 
-.donut-legend li {
+.summary-hint.is-over {
+  color: #ff3b30;
+}
+
+/* Полосы макросов под кольцом */
+.summary-macros {
+  width: 100%;
+  margin-top: var(--spacing-lg);
   display: flex;
-  align-items: center;
-  gap: var(--spacing-xs);
+  flex-direction: column;
+  gap: var(--spacing-md);
+}
+
+.macro-bar {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.macro-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
   font-size: 13px;
-  line-height: 1.3;
+}
+
+.macro-name {
+  font-weight: var(--font-weight-medium);
   color: var(--color-text-primary);
 }
 
-.donut-dot {
-  flex-shrink: 0;
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-}
-
-.donut-legend-label {
-  flex: 1;
-  min-width: 0;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-
-.donut-legend-percent {
-  flex-shrink: 0;
-  font-weight: var(--font-weight-semibold);
+.macro-values {
   color: var(--color-text-secondary);
   font-variant-numeric: tabular-nums;
 }
 
-/* Приглушённая строка легенды, если в этой категории ничего не съедено */
-.donut-legend li.is-empty .donut-legend-label,
-.donut-legend li.is-empty .donut-legend-percent {
-  color: var(--color-text-tertiary);
+.macro-values strong {
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
 }
 
-.donut-empty {
-  margin-top: var(--spacing-sm);
-  font-size: 13px;
-  text-align: center;
-  color: var(--color-text-tertiary);
+.progress-bar {
+  height: 6px;
+  background-color: rgba(0, 0, 0, 0.06);
+  border-radius: var(--radius-full);
+  overflow: hidden;
 }
 
-/* Мелкие экраны: кольцо над легендой */
-@media (max-width: 360px) {
-  .donut-wrap {
-    flex-direction: column;
-    align-items: stretch;
-    gap: var(--spacing-md);
-  }
+.progress-bar-fill {
+  height: 100%;
+  border-radius: var(--radius-full);
+  transition: width 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+}
 
-  .donut {
-    align-self: center;
-  }
+.progress-bar.protein .progress-bar-fill {
+  background: var(--gradient-protein);
+}
+
+.progress-bar.fats .progress-bar-fill {
+  background: var(--gradient-fats);
+}
+
+.progress-bar.carbs .progress-bar-fill {
+  background: var(--gradient-carbs);
 }
 
 /* ===============================================
@@ -1331,11 +1256,10 @@ body.is-onboarding {
   margin-top: var(--spacing-lg);
   padding: var(--spacing-lg);
   background-color: var(--color-surface);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  border-radius: 24px;
   display: flex;
   flex-direction: column;
-  gap: var(--spacing-md);
+  gap: var(--spacing-lg);
 }
 
 .split-row {
@@ -1368,15 +1292,20 @@ body.is-onboarding {
 .split-bar {
   display: flex;
   width: 100%;
-  height: 10px;
+  height: 6px;
   border-radius: var(--radius-full);
   overflow: hidden;
   background-color: rgba(0, 0, 0, 0.06);
-  transition: opacity 0.2s ease;
+  transition: opacity 0.25s ease;
 }
 
+/* Нет еды за день: полоска спит, но остаётся на месте */
 .split-bar.is-empty {
-  opacity: 0.45;
+  background-color: rgba(0, 0, 0, 0.05);
+}
+
+.split-bar.is-empty .split-segment {
+  width: 0 !important;
 }
 
 .split-segment {
@@ -1404,8 +1333,7 @@ body.is-onboarding {
   margin-top: var(--spacing-lg);
   padding: 0 var(--spacing-lg);
   background-color: var(--color-surface);
-  border-radius: var(--radius-lg);
-  box-shadow: var(--shadow-sm);
+  border-radius: 24px;
 }
 
 .nutrition-summary {
