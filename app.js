@@ -1254,10 +1254,26 @@ function buildMealPrompt(ingredients, drinks, title, hasPhoto) {
     'Дополнительно оцени клетчатку (fiber, граммы), натрий (sodium, миллиграммы) ' +
       'и сахар (sugar, граммы). Если по продукту данных нет — верни null.'
   );
+  // Баланс приёма относительно цели пользователя (пресет из state.goals)
+  const goalSplit = state.goals?.split;
+  if (goalSplit && state.goals?.kcal) {
+    lines.push(
+      `Цель пользователя: белки ${goalSplit.protein}%, жиры ${goalSplit.fats}%, углеводы ${goalSplit.carbs}% от калорий. ` +
+        'Посчитай долю каждого макроса в калориях ЭТОГО приёма (белки и углеводы — 4 ккал/г, жиры — 9 ккал/г).'
+    );
+    lines.push(
+      'Если доля какого-либо макроса отличается от цели больше чем на 10 процентных пунктов, это перекос. ' +
+        'В поле "ai_recommendation" напиши одну короткую рекомендацию по-русски строго в формате: ' +
+        '"Чтобы сбалансировать это блюдо под вашу цель, в следующий раз рекомендуется уменьшить [название продукта из списка] на [X] грамм. Это сэкономит [Y] ккал." ' +
+        'Выбирай продукт, который сильнее всего даёт перебор нужного макроса; X и Y считай по составу. ' +
+        'Если перекоса нет — оставь "ai_recommendation" пустой строкой или напиши короткую похвалу.'
+    );
+  }
+
   lines.push('Верни ответ СТРОГО в формате JSON без markdown:');
   lines.push(
     '{"title": "Название на русском", "calories": 450, "protein": 30, "fat": 15, ' +
-      '"carbs": 48, "fiber": 4.5, "sodium": 320, "sugar": 5}'
+      '"carbs": 48, "fiber": 4.5, "sodium": 320, "sugar": 5, "ai_recommendation": ""}'
   );
 
   return lines.join(' ');
@@ -1419,6 +1435,11 @@ function normalizeMeal(data) {
     fiber: micro(data.fiber),
     sodium: micro(data.sodium),
     sugar: micro(data.sugar),
+    // Совет ИИ при перекосе БЖУ. Пустая строка — совета нет
+    ai_recommendation:
+      typeof data.ai_recommendation === 'string'
+        ? data.ai_recommendation.trim().slice(0, 300)
+        : '',
   };
 
   const valid = meal.kcal > 0 && meal.kcal < 5000;
@@ -1472,6 +1493,7 @@ async function handleMealSubmit(event) {
       fiber: analyzed.fiber,
       sodium: analyzed.sodium,
       sugar: analyzed.sugar,
+      ai_recommendation: analyzed.ai_recommendation || '',
       photo: state.pendingPhoto?.thumb || state.existingPhoto || '',
     };
 
@@ -1744,6 +1766,16 @@ function renderMeals(todayMeals) {
     info.appendChild(macros);
 
     // Состав: еда и напитки отдельными строками
+    // Совет ИИ: показываем только если модель что-то написала
+    const advice = typeof meal.ai_recommendation === 'string' ? meal.ai_recommendation.trim() : '';
+    if (advice) {
+      const tip = el('aside', 'meal-tip');
+      tip.setAttribute('aria-label', 'Совет ИИ');
+      tip.appendChild(el('span', 'meal-tip-label', 'Совет ИИ 💡'));
+      tip.appendChild(el('p', 'meal-tip-text', advice));
+      info.appendChild(tip);
+    }
+
     const hasFood = meal.ingredients?.length;
     const hasDrinks = meal.drinks?.length;
 
