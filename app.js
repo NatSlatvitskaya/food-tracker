@@ -390,7 +390,11 @@ function sumMeals(meals) {
     fiberCount: 0, sodiumCount: 0, sugarCount: 0,
   };
 
-  meals.forEach((m) => {
+  console.groupCollapsed(`[Диагностика] Подсчет суммы за день (${meals.length} приемов пищи)`);
+
+  meals.forEach((m, idx) => {
+    const before = { kcal: totals.kcal, protein: totals.protein, fats: totals.fats, carbs: totals.carbs };
+
     totals.kcal += m.kcal || 0;
     totals.protein += m.protein || 0;
     totals.fats += m.fats || 0;
@@ -403,7 +407,23 @@ function sumMeals(meals) {
         totals[`${key}Count`] += 1;
       }
     });
+
+    const after = { kcal: totals.kcal, protein: totals.protein, fats: totals.fats, carbs: totals.carbs };
+    console.log(
+      `Прием #${idx + 1} "${m.title}":`,
+      "\n  Было за день:", before,
+      "\n  Добавляем:", { kcal: m.kcal, protein: m.protein, fats: m.fats, carbs: m.carbs },
+      "\n  Стало:", after
+    );
   });
+
+  console.log("ИТОГО ЗА ДЕНЬ (сырые граммы):", {
+    kcal: totals.kcal,
+    protein: `${totals.protein}г`,
+    fats: `${totals.fats}г`,
+    carbs: `${totals.carbs}г`
+  });
+  console.groupEnd();
 
   return totals;
 }
@@ -1471,7 +1491,14 @@ async function handleMealSubmit(event) {
 
     const content = buildMealContent(ingredients, drinks, nameInput, state.pendingPhoto?.dataUrl);
     const raw = await callModel(content, 400);
-    const analyzed = normalizeMeal(parseModelJson(raw));
+
+    // --- НАЧАЛО ДИАГНОСТИЧЕСКОГО ЛОГА ---
+    console.log("Сырой ответ от ИИ:", raw);
+    const parsedJson = parseModelJson(raw);
+    console.log("JSON после parseModelJson:", parsedJson);
+    const analyzed = normalizeMeal(parsedJson);
+    console.log("Распарсенный КБЖУ блюда:", analyzed);
+    // --- КОНЕЦ ДИАГНОСТИЧЕСКОГО ЛОГА ---
 
     if (!analyzed) throw new Error('Не удалось распознать приём пищи');
 
@@ -1765,6 +1792,16 @@ function renderMeals(todayMeals) {
     });
     info.appendChild(macros);
 
+    // Визуальный диагностический блок для проверки на смартфоне
+    const debugAudit = el('div', 'meal-debug-audit');
+    debugAudit.innerHTML = `
+      <span class="debug-p">Белки: <strong>${meal.protein}</strong>г</span>
+      <span class="debug-f">Жиры: <strong>${meal.fats}</strong>г</span>
+      <span class="debug-c">Углеводы: <strong>${meal.carbs}</strong>г</span>
+      <span class="debug-k">(${meal.kcal} ккал)</span>
+    `;
+    info.appendChild(debugAudit);
+
     // Состав: еда и напитки отдельными строками
     // Совет ИИ: показываем только если модель что-то написала
     const advice = typeof meal.ai_recommendation === 'string' ? meal.ai_recommendation.trim() : '';
@@ -1826,7 +1863,23 @@ function renderProgress() {
  * Ширины секторов складываются в 100%, поэтому полоса всегда полная.
  */
 function renderActualSplit(totals) {
+  const pKcal = (totals.protein || 0) * 4;
+  const fKcal = (totals.fats || 0) * 9;
+  const cKcal = (totals.carbs || 0) * 4;
+  const totalKcal = pKcal + fKcal + cKcal;
+
   const split = calorieSplit(totals.protein, totals.fats, totals.carbs);
+
+  console.log("[Диагностика] Расчет шкалы 'Фактическое':", {
+    "1. Граммы": { Б: totals.protein, Ж: totals.fats, У: totals.carbs },
+    "2. В калориях (Б*4, Ж*9, У*4)": { Б_ккал: pKcal, Ж_ккал: fKcal, У_ккал: cKcal, Всего_ккал: totalKcal },
+    "3. Итоговые проценты шкалы": {
+      "Белки %": `${split.protein.toFixed(1)}%`,
+      "Жиры %": `${split.fats.toFixed(1)}%`,
+      "Углеводы %": `${split.carbs.toFixed(1)}%`
+    }
+  });
+
   const bar = $('split-actual-bar');
   const empty = split.protein + split.fats + split.carbs <= 0;
 

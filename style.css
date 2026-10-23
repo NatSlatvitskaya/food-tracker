@@ -1718,3 +1718,31 @@ body.is-onboarding {
   line-height: 1.45;
   color: var(--color-text-primary);
 }
+
+/* ===============================================
+   Диагностическая плашка КБЖУ в карточке истории
+   =============================================== */
+
+.meal-debug-audit {
+  margin-top: 6px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background-color: rgba(0, 0, 0, 0.04);
+  font-size: 12px;
+  font-family: -apple-system, BlinkMacSystemFont, "SF Mono", Menlo, monospace;
+  color: var(--color-text-primary);
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  line-height: 1.4;
+}
+
+.meal-debug-audit span {
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--font-weight-medium);
+}
+
+.meal-debug-audit .debug-p { color: var(--color-protein); }
+.meal-debug-audit .debug-f { color: #b8860b; }
+.meal-debug-audit .debug-c { color: var(--color-carbs); }
+.meal-debug-audit .debug-k { color: var(--color-text-secondary); }
