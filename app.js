@@ -1,6 +1,8 @@
 /* =========================================================
-   app.js — трекер питания с ИИ (OpenRouter)
-   Все данные лежат в localStorage. Без сборки и зависимостей.
+   app.js — трекер питания с ИИ
+   Работает как Telegram Mini App и как обычная веб-страница.
+   Все данные и ключи живут на сервере (Render + Supabase).
+   В браузере остаётся только кэш для мгновенной отрисовки.
    ========================================================= */
 
 'use strict';
@@ -9,26 +11,46 @@
    1. КОНФИГУРАЦИЯ
    ========================================================= */
 
-// Полный адрес эндпоинта. Просто https://openrouter.ai не отвечает на POST —
-// нужен путь /api/v1/chat/completions
-const API_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const API_TIMEOUT_MS = 45000;
+/*
+  СЕРВЕР. Все запросы к ИИ и базе идут сюда.
+  Ключ OpenRouter живёт только в переменных окружения Render,
+  в браузер он больше не попадает.
+*/
+const SERVER_URL = 'https://nutlet-food-agent.onrender.com';
+const API_TIMEOUT_MS = 60000;
 
 /*
-  МОДЕЛИ. Проверяются по порядку: если первая недоступна (модель снята
-  с продажи, нет доступа), запрос повторяется со следующей.
-
-  Актуальный список моделей: openrouter.ai/models
-  Условие для модели: поддержка изображений (input_modalities: image).
+  TELEGRAM MINI APP.
+  initData — подписанная строка от Telegram. Сервер проверяет её HMAC-подписью,
+  поэтому подделать чужой telegram_id нельзя.
+  initDataUnsafe.user.id используем только для локального кэша и подписей в UI:
+  доверять ему для доступа к данным нельзя, проверка всегда на сервере.
 */
-const API_MODELS = [
-  'google/gemini-2.5-flash',        // основная: быстрая, дешёвая, видит фото
-  'google/gemini-2.5-flash-lite',   // легче и дешевле
-  'google/gemma-4-31b-it:free',     // бесплатный резерв
-];
+const tg = typeof window !== 'undefined' ? window.Telegram?.WebApp : null;
 
-// Ключ НЕ хранится в коде: он вводится один раз и лежит в localStorage
-const API_KEY_STORAGE = 'tracker.apiKey';
+if (tg) {
+  try {
+    tg.ready();
+    tg.expand();
+  } catch (err) {
+    console.warn('Telegram WebApp не инициализировался:', err.message);
+  }
+}
+
+/** Подписанная строка для заголовка x-telegram-init-data */
+function telegramInitData() {
+  return tg?.initData || '';
+}
+
+/** Локальный идентификатор для кэша. Для доступа к данным не используется */
+function telegramUserId() {
+  return String(tg?.initDataUnsafe?.user?.id || 'local');
+}
+
+/** Запущено ли внутри Telegram: от этого зависит авторизация */
+function isTelegramContext() {
+  return Boolean(telegramInitData());
+}
 
 // Ключи localStorage для данных
 const STORAGE_KEYS = {
@@ -465,28 +487,6 @@ function round(value, fallback = 0) {
    3. JSON ОТ МОДЕЛИ
    ========================================================= */
 
-/**
- * Модели любят оборачивать JSON в ```json ... ``` и добавлять текст вокруг.
- * Достаём первый объект {...} и парсим его.
- */
-function parseModelJson(raw) {
-  if (!raw || typeof raw !== 'string') {
-    throw new Error('Модель вернула пустой ответ');
-  }
-
-  const cleaned = raw
-    .replace(/```json/gi, '')
-    .replace(/```/g, '')
-    .trim();
-
-  const start = cleaned.indexOf('{');
-  const end = cleaned.lastIndexOf('}');
-  if (start === -1 || end === -1 || end < start) {
-    throw new Error('В ответе модели нет JSON');
-  }
-
-  return JSON.parse(cleaned.slice(start, end + 1));
-}
 
 /* =========================================================
    4. СОСТОЯНИЕ
@@ -502,7 +502,8 @@ const state = {
   existingPhoto: '',    // фото из редактируемой записи (если новое не выбрано)
   editingMealId: null,  // id приёма пищи в режиме правки, иначе null
   goalDraft: DEFAULT_GOAL, // выбранная цель в онбординге
-  dayIndex: {},            // приёмы пищи по датам YYYY-MM-DD
+  dayIndex: {},
+  serverHistory: null, // ответ /api/history за сегодня            // приёмы пищи по датам YYYY-MM-DD
 };
 
 /**
@@ -574,27 +575,93 @@ function availableDays() {
     .sort((a, b) => b.localeCompare(a));
 }
 
-function loadState() {
+/**
+ * Загрузка данных.
+ *
+ * Сначала читаем локальный кэш — интерфейс рисуется сразу, без ожидания сети.
+ * Затем запрашиваем сервер; если он ответил, кэш заменяется свежими данными.
+ * Если сети нет, приложение продолжает работать на кэше.
+ */
+function loadStateFromCache() {
   state.profile = load(STORAGE_KEYS.profile, null);
   state.goalDraft = state.profile?.goal || DEFAULT_GOAL;
-  // Цели прошлых версий хранились без процентов — приводим к новому виду
+
   const storedGoals = load(STORAGE_KEYS.goals, null);
   state.goals = storedGoals
     ? normalizeGoalsShape(storedGoals, state.goalDraft)
     : defaultGoalsFor(state.goalDraft);
 
-  // Записываем пересчитанные граммы обратно: иначе в хранилище остаются
-  // устаревшие значения, и внешние читатели (например, бот) увидят нули
-  if (storedGoals) {
-    const current = JSON.stringify(storedGoals);
-    if (current !== JSON.stringify(state.goals)) {
-      save(STORAGE_KEYS.goals, state.goals);
-    }
-  }
-
   state.metrics = load(STORAGE_KEYS.metrics, []);
   state.meals = load(STORAGE_KEYS.meals, []);
   state.dayIndex = indexMealsByDay(state.meals);
+}
+
+/**
+ * Синхронизация с сервером.
+ * Ошибку не пробрасываем: приложение должно открыться и без сети.
+ */
+async function syncFromServer() {
+  try {
+    const data = await fetchProfile();
+
+    if (!data) {
+      // Профиля на сервере нет — показываем онбординг
+      state.profile = null;
+      showOnboarding();
+      return;
+    }
+
+    state.profile = data.profile;
+    state.goalDraft = data.profile.goal;
+    state.goals = normalizeGoalsShape(data.goals, data.profile.goal);
+
+    save(STORAGE_KEYS.profile, state.profile);
+    save(STORAGE_KEYS.goals, state.goals);
+
+    // Замеры
+    const metrics = await fetchMetrics().catch(() => null);
+    if (metrics) {
+      state.metrics = metrics;
+      save(STORAGE_KEYS.metrics, metrics);
+    }
+
+    // Архив за сегодня
+    const history = await apiFetch(`/api/history?date=${toISODate()}`).catch(() => null);
+    if (history) {
+      state.serverHistory = history;
+      state.meals = (history.meals || []).map((m) => ({
+        id: m.id,
+        date: m.date,
+        time: m.time,
+        category: m.category,
+        title: m.title,
+        ingredients: [],
+        drinks: [],
+        grams: 0,
+        ml: 0,
+        kcal: m.calories,
+        protein: Number(m.protein),
+        fats: Number(m.fats),
+        carbs: Number(m.carbs),
+        fiber: m.fiber,
+        sodium: m.sodium,
+        sugar: m.sugar,
+        ai_recommendation: m.ai_recommendation || '',
+        items: m.items || [],
+        photo: '',
+      }));
+      state.dayIndex = indexMealsByDay(state.meals);
+      save(STORAGE_KEYS.meals, state.meals);
+    }
+
+    if (state.profile) hideOnboarding();
+    renderAll();
+  } catch (err) {
+    console.warn('Синхронизация с сервером не удалась, работаем на кэше:', err.message);
+    if (err.status === 401) {
+      toast('Откройте трекер из Telegram — без этого данные не загрузятся', 'error');
+    }
+  }
 }
 
 /** Замер за сегодня заменяет предыдущий, иначе добавляется новый */
@@ -625,89 +692,8 @@ function upsertMetric(entry) {
    5. КЛЮЧ API
    ========================================================= */
 
-function getApiKey() {
-  return localStorage.getItem(API_KEY_STORAGE) || '';
-}
 
-/**
- * Просит пользователя вставить ключ OpenRouter.
- * Окно создаётся прямо в JS, поэтому index.html менять не нужно.
- * Возвращает Promise с ключом (или null, если пользователь закрыл окно).
- */
-function askForApiKey() {
-  return new Promise((resolve) => {
-    const modal = el('div', 'modal');
-    modal.setAttribute('role', 'dialog');
-    modal.setAttribute('aria-modal', 'true');
 
-    const backdrop = el('div', 'modal-backdrop');
-    const content = el('div', 'modal-content');
-    const header = el('header', 'modal-header');
-    const title = el('h3', '', 'Ключ OpenRouter');
-    const closeBtn = el('button', 'modal-close', '×');
-    closeBtn.type = 'button';
-    closeBtn.setAttribute('aria-label', 'Закрыть');
-    header.append(title, closeBtn);
-
-    const form = el('form', 'modal-form');
-
-    const hint = el(
-      'p',
-      'form-hint',
-      'Ключ хранится только в этом браузере (localStorage) и не попадает в код сайта. Получить ключ: openrouter.ai/keys'
-    );
-
-    const group = el('div', 'form-group');
-    const label = el('label', '', 'Ключ API');
-    label.setAttribute('for', 'api-key-input');
-    const input = el('input');
-    input.type = 'password';
-    input.id = 'api-key-input';
-    input.placeholder = 'sk-or-v1-...';
-    input.autocomplete = 'off';
-    group.append(label, input);
-
-    const submit = el('button', 'btn-primary', 'Сохранить ключ');
-    submit.type = 'submit';
-
-    form.append(hint, group, submit);
-    content.append(header, form);
-    modal.append(backdrop, content);
-    document.body.appendChild(modal);
-
-    // Небольшая задержка, чтобы сработала анимация появления
-    requestAnimationFrame(() => modal.classList.add('open'));
-
-    function finish(value) {
-      modal.classList.remove('open');
-      setTimeout(() => modal.remove(), 250);
-      resolve(value);
-    }
-
-    closeBtn.addEventListener('click', () => finish(null));
-    backdrop.addEventListener('click', () => finish(null));
-
-    form.addEventListener('submit', (event) => {
-      event.preventDefault();
-      const key = input.value.trim();
-      if (!key) {
-        input.focus();
-        return;
-      }
-      localStorage.setItem(API_KEY_STORAGE, key);
-      finish(key);
-    });
-
-    setTimeout(() => input.focus(), 100);
-  });
-}
-
-/** Возвращает существующий ключ или просит ввести новый */
-async function ensureApiKey() {
-  const existing = getApiKey();
-  if (existing) return existing;
-  return askForApiKey();
-}
 
 /* =========================================================
    6. ЗАПРОСЫ К OPENROUTER
@@ -717,121 +703,7 @@ async function ensureApiKey() {
  * Отправляет сообщения в модель и возвращает текст ответа.
  * content — либо строка, либо массив частей (для фото).
  */
-/**
- * Отправляет один запрос к указанной модели.
- * Возвращает { text } при успехе или бросает ошибку с полем .status.
- */
-async function requestModel(model, apiKey, content, maxTokens) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
-  let response;
-  try {
-    response = await fetch(API_URL, {
-      method: 'POST',
-      signal: controller.signal,
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        'Content-Type': 'application/json',
-        // Необязательные заголовки для статистики OpenRouter
-        'HTTP-Referer': location.origin,
-        'X-Title': 'Food Tracker',
-      },
-      body: JSON.stringify({
-        model,
-        temperature: 0.2,
-        max_tokens: maxTokens,
-        messages: [{ role: 'user', content }],
-      }),
-    });
-  } catch (err) {
-    clearTimeout(timer);
-
-    if (err.name === 'AbortError') {
-      const timeout = new Error('Модель не ответила за 45 секунд. Попробуйте ещё раз');
-      timeout.status = 'timeout';
-      throw timeout;
-    }
-
-    // fetch отдаёт TypeError, когда запрос не дошёл или ответ заблокирован CORS
-    const network = new Error(
-      'Запрос не дошёл до OpenRouter. Проверьте интернет и VPN — ' +
-        'некоторые блокировщики рекламы режут запросы к openrouter.ai'
-    );
-    network.status = 'network';
-    throw network;
-  } finally {
-    clearTimeout(timer);
-  }
-
-  if (!response.ok) {
-    let details = '';
-    try {
-      const data = await response.json();
-      details = data?.error?.message || '';
-    } catch (_) {
-      /* тело не JSON — оставляем пустым */
-    }
-
-    const error = new Error(details || `HTTP ${response.status}`);
-    error.status = response.status;
-    error.model = model;
-    throw error;
-  }
-
-  const data = await response.json();
-  const text = data?.choices?.[0]?.message?.content;
-  if (!text) {
-    const empty = new Error('Модель вернула пустой ответ');
-    empty.status = 'empty';
-    throw empty;
-  }
-  return text;
-}
-
-/**
- * Пробует модели по очереди. Переключается на следующую, только если
- * проблема в самой модели (404) или недоступности провайдера (5xx).
- * Ошибки ключа и баланса не повторяем — они не зависят от модели.
- */
-async function callModel(content, maxTokens = 500) {
-  const apiKey = await ensureApiKey();
-  if (!apiKey) {
-    throw new Error('Нужен ключ OpenRouter');
-  }
-
-  let lastError = null;
-
-  for (const model of API_MODELS) {
-    try {
-      return await requestModel(model, apiKey, content, maxTokens);
-    } catch (err) {
-      lastError = err;
-
-      if (err.status === 401) {
-        throw new Error('Ключ отклонён. Проверьте, что скопировали его целиком, и войдите в аккаунт OpenRouter');
-      }
-      if (err.status === 402) {
-        throw new Error('На балансе OpenRouter закончились средства');
-      }
-      if (err.status === 429) {
-        throw new Error('Слишком много запросов. Подождите минуту и повторите');
-      }
-
-      // 404 — модель снята с продажи, пробуем следующую
-      // 5xx — сбой у провайдера, тоже имеет смысл повторить с другой моделью
-      const retryable = err.status === 404 || (typeof err.status === 'number' && err.status >= 500);
-      if (!retryable) throw err;
-
-      console.warn(`Модель ${model} недоступна (${err.status}), пробую следующую`);
-    }
-  }
-
-  throw new Error(
-    `Ни одна модель не ответила. Последняя ошибка: ${lastError?.message || 'неизвестно'}. ` +
-      'Актуальные модели: openrouter.ai/models'
-  );
-}
 
 /* =========================================================
    7. ФОТО: ЧТЕНИЕ И СЖАТИЕ
@@ -903,6 +775,106 @@ function compressImage(img, maxSide, quality) {
  *   dataUrl — 1024 px для отправки в ИИ
  *   thumb   — 512 px для карточки в истории (экономит localStorage)
  */
+/* =========================================================
+   СЕТЬ: обращения к серверу
+   ========================================================= */
+
+/**
+ * Обёртка над fetch к нашему серверу.
+ *
+ * - Подставляет базовый адрес.
+ * - Прикладывает подписанный initData от Telegram в заголовке.
+ * - Держит таймаут: анализ фото может идти до минуты.
+ * - Разбирает ошибку сервера и бросает Error с понятным текстом.
+ */
+async function apiFetch(path, { method = 'GET', body = null, timeoutMs = API_TIMEOUT_MS } = {}) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+
+  const headers = { 'x-telegram-init-data': telegramInitData() };
+  if (body !== null) headers['Content-Type'] = 'application/json';
+
+  try {
+    const response = await fetch(`${SERVER_URL}${path}`, {
+      method,
+      signal: controller.signal,
+      headers,
+      body: body !== null ? JSON.stringify(body) : undefined,
+    });
+
+    let data = null;
+    try {
+      data = await response.json();
+    } catch (_) {
+      /* тело не JSON — оставим null */
+    }
+
+    if (!response.ok) {
+      const error = new Error(data?.error || `Сервер ответил ${response.status}`);
+      error.status = response.status;
+      error.data = data;
+      throw error;
+    }
+
+    return data;
+  } catch (err) {
+    if (err.name === 'AbortError') {
+      const timeout = new Error('Сервер не ответил за минуту. Попробуйте ещё раз');
+      timeout.status = 'timeout';
+      throw timeout;
+    }
+    // fetch падает TypeError, когда запрос не ушёл: сеть, CORS или сервер спит
+    if (err instanceof TypeError) {
+      const network = new Error(
+        'Нет связи с сервером. Проверьте интернет — на бесплатном тарифе Render сервис засыпает, ' +
+          'первый запрос может занять до минуты'
+      );
+      network.status = 'network';
+      throw network;
+    }
+    throw err;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Профиль и цели с сервера. 404 значит «профиля ещё нет» */
+async function fetchProfile() {
+  try {
+    const data = await apiFetch('/api/profile');
+    return data;
+  } catch (err) {
+    if (err.status === 404) return null;
+    throw err;
+  }
+}
+
+/** Сохраняет профиль на сервере. Возвращает { profile, goals } */
+async function saveProfileRemote(profile) {
+  const data = await apiFetch('/api/profile', { method: 'POST', body: { profile } });
+  return data;
+}
+
+/** Сохраняет ручную раскладку БЖУ */
+async function saveGoalsRemote(goals) {
+  const data = await apiFetch('/api/goals', {
+    method: 'POST',
+    body: { kcal: goals.kcal, split: goals.split },
+  });
+  return data;
+}
+
+/** Замеры с сервера */
+async function fetchMetrics() {
+  const data = await apiFetch('/api/metrics');
+  return data.metrics || [];
+}
+
+/** Сохраняет замер на сервере */
+async function saveMetricRemote(entry) {
+  await apiFetch('/api/metrics', { method: 'POST', body: entry });
+}
+
 async function preparePhoto(file) {
   const img = await loadImageFromFile(file);
 
@@ -1049,22 +1021,6 @@ function initGoalPicker() {
   paint(state.goalDraft);
 }
 
-/** Промпт для расчёта целей: текст зависит от выбранной цели по весу */
-function buildGoalsPrompt(profile) {
-  const meta = GOALS_META[profile.goal] || GOALS_META[DEFAULT_GOAL];
-
-  return [
-    `Пользователь: возраст ${profile.age}, вес ${profile.currentWeight} кг,`,
-    `замеры талия/бёдра/ягодицы ${profile.waist}/${profile.hips}/${profile.glutes} см,`,
-    `желаемый вес ${profile.targetWeight} кг.`,
-    `Главная цель: ${meta.label}.`,
-    meta.instruction,
-    'Рассчитай ТОЛЬКО суточную норму калорий по формуле Миффлина-Сан Жеора.',
-    'Белки, жиры и углеводы рассчитывать не нужно — их распределит приложение по цели.',
-    'Верни ответ СТРОГО в формате JSON без markdown и без лишних слов:',
-    '{"calories": 1874}',
-  ].join(' ');
-}
 
 /** Приводит ответ модели к внутреннему виду целей */
 /**
@@ -1072,28 +1028,16 @@ function buildGoalsPrompt(profile) {
  * Модель отдаёт граммы — из них восстанавливаем проценты калорий,
  * чтобы ползунки и «Целевая» шкала показывали ту же картину.
  */
-/**
- * Разбирает ответ модели по целям.
- *
- * Модель считает только КАЛОРИИ (Миффлин-Сан Жеор плюс дефицит/профицит
- * под цель). Проценты БЖУ берём из пресета цели, а не из ответа модели:
- * иначе норма расходится с целью, ведь модель каждый раз возвращает
- * свои собственные цифры.
- */
-function normalizeGoals(data, goal) {
-  const kcal = round(data.calories);
-
-  // Калории — единственное, что нужно от модели
-  const valid = kcal >= 800 && kcal <= 6000;
-  if (!valid) return null;
-
-  return goalsFromSplit(kcal, defaultSplitFor(goal), 'goal');
-}
 
 /**
  * Кнопка "Рассчитать цель через ИИ-агента".
  * ВРЕМЕННАЯ ЧАСТЬ: при ошибке сети цели остаются дефолтными,
  * чтобы пользователь не оказался заперт на стартовом экране.
+ */
+/**
+ * Сохранение профиля из онбординга.
+ * Норму калорий и проценты БЖУ считает сервер: ключ OpenRouter
+ * и логика расчёта живут там, в браузере их больше нет.
  */
 async function handleOnboardingSubmit(event) {
   event.preventDefault();
@@ -1110,43 +1054,44 @@ async function handleOnboardingSubmit(event) {
     age: num('age'),
     targetWeight: num('target-weight'),
     goal: state.goalDraft,
-    createdAt: toISODate(),
   };
 
-  const restore = setButtonLoading(button, 'ИИ анализирует…');
+  const restore = setButtonLoading(button, 'Считаем норму…');
   setFormError(form, '');
 
-  let goals = null;
+  let saved = null;
   try {
-    const raw = await callModel(buildGoalsPrompt(profile), 300);
-    goals = normalizeGoals(parseModelJson(raw), profile.goal);
-    if (!goals) throw new Error('Модель вернула некорректные значения');
+    saved = await saveProfileRemote(profile);
+
+    // Первый замер сразу уходит в историю прогресса
+    await saveMetricRemote({
+      date: toISODate(),
+      weight: profile.currentWeight,
+      waist: profile.waist,
+      hips: profile.hips,
+      glutes: profile.glutes,
+    }).catch((err) => console.warn('Замер не сохранён:', err.message));
+
+    state.metrics = await fetchMetrics().catch(() => []);
   } catch (err) {
-    console.error('Расчёт целей не удался:', err);
-    const fallback = defaultGoalsFor(profile.goal);
-    setFormError(form, `${err.message}. Применены цели по умолчанию ${fallback.kcal} ккал.`);
-    goals = fallback;
+    console.error('Профиль не сохранён:', err);
+    setFormError(form, err.message);
+    toast(err.message, 'error');
+    return;
   } finally {
     restore();
   }
 
-  state.profile = profile;
-  state.goals = goals;
+  state.profile = saved.profile;
+  state.goals = normalizeGoalsShape(saved.goals, saved.profile.goal);
 
-  // Данные онбординга становятся первым замером в истории прогресса
-  upsertMetric({
-    date: profile.createdAt,
-    weight: profile.currentWeight,
-    waist: profile.waist,
-    hips: profile.hips,
-    glutes: profile.glutes,
-  });
-
-  save(STORAGE_KEYS.profile, profile);
-  save(STORAGE_KEYS.goals, goals);
+  // Локальная копия: нужна для мгновенной отрисовки при следующем открытии
+  save(STORAGE_KEYS.profile, state.profile);
+  save(STORAGE_KEYS.goals, state.goals);
 
   hideOnboarding();
   renderAll();
+  toast('Профиль сохранён', 'success');
 }
 
 /* =========================================================
@@ -1236,96 +1181,7 @@ function handlePhotoChange(event) {
   })();
 }
 
-/**
- * Промпт для распознавания приёма пищи.
- * Еда идёт в граммах, напитки — в миллилитрах: модель должна знать,
- * что 250 мл латте и 250 г латте — не одно и то же.
- */
-function buildMealPrompt(ingredients, drinks, title, hasPhoto) {
-  const lines = [];
 
-  lines.push(
-    hasPhoto
-      ? 'Проанализируй фото этого приёма пищи и указанный состав.'
-      : 'Проанализируй состав приёма пищи.'
-  );
-
-  if (title) lines.push(`Блюдо: ${title}.`);
-
-  if (ingredients.length) {
-    const list = ingredients.map((i) => `${i.name} — ${i.grams} г`).join(', ');
-    lines.push(`Еда (вес в граммах): ${list}. Общий вес еды: ${totalGrams(ingredients)} г.`);
-  }
-
-  if (drinks.length) {
-    const list = drinks.map((d) => `${d.name} — ${d.ml} мл`).join(', ');
-    lines.push(
-      `Напитки (объём в миллилитрах): ${list}. Общий объём: ${totalMl(drinks)} мл.`
-    );
-    lines.push(
-      'Для напитков пересчитывай объём в вес по плотности (вода и кофе ≈ 1 г/мл, ' +
-        'молоко ≈ 1.03 г/мл, сок ≈ 1.05 г/мл) и учитывай калорийность по составу.'
-    );
-  }
-
-  // Справочные данные рынка СНГ/РФ: модель должна опираться на них, а не на среднемировые значения
-  lines.push(
-    'При расчёте КБЖУ продуктов и блюд строго ориентируйся на справочные данные продуктов, ' +
-      'популярных на рынке СНГ и РФ. Учитывай особенности локальных брендов, если они указаны в тексте:'
-  );
-  lines.push(
-    '- Сыр Чеддер (Брест-Литовск) содержит примерно 260–290 ккал и около 20–23 г жира на 100 г ' +
-      '(он менее жирный, чем классический европейский Чеддер).'
-  );
-  lines.push(
-    '- Российские сосиски (например, сочные, молочные, Папа Может) в среднем содержат 250–280 ккал ' +
-      'и около 20–24 г жира на 100 г.'
-  );
-  lines.push(
-    '- Если пользователь указывает конкретную марку (Barilla, Брест-Литовск, Магнит, Вкусно и Точка, Цех 85), ' +
-      'старайся брать КБЖУ именно этих линеек из своей базы знаний, а не среднемировые значения. ' +
-      'Будь аккуратнее с жирами, не завышай их для полуфабрикатов и сыров.'
-  );
-  lines.push('Рассчитай КБЖУ всего приёма пищи — еды и напитков вместе.');
-  lines.push(
-    'Дополнительно оцени клетчатку (fiber, граммы), натрий (sodium, миллиграммы) ' +
-      'и сахар (sugar, граммы). Если по продукту данных нет — верни null.'
-  );
-  // Баланс приёма относительно цели пользователя (пресет из state.goals)
-  const goalSplit = state.goals?.split;
-  if (goalSplit && state.goals?.kcal) {
-    lines.push(
-      `Цель пользователя: белки ${goalSplit.protein}%, жиры ${goalSplit.fats}%, углеводы ${goalSplit.carbs}% от калорий. ` +
-        'Посчитай долю каждого макроса в калориях ЭТОГО приёма (белки и углеводы — 4 ккал/г, жиры — 9 ккал/г).'
-    );
-    lines.push(
-      'Если доля какого-либо макроса отличается от цели больше чем на 10 процентных пунктов, это перекос. ' +
-        'В поле "ai_recommendation" напиши одну короткую рекомендацию по-русски строго в формате: ' +
-        '"Чтобы сбалансировать это блюдо под вашу цель, в следующий раз рекомендуется уменьшить [название продукта из списка] на [X] грамм. Это сэкономит [Y] ккал." ' +
-        'Выбирай продукт, который сильнее всего даёт перебор нужного макроса; X и Y считай по составу. ' +
-        'Если перекоса нет — оставь "ai_recommendation" пустой строкой или напиши короткую похвалу.'
-    );
-  }
-
-  lines.push('Верни ответ СТРОГО в формате JSON без markdown:');
-  lines.push(
-    '{"title": "Название на русском", "calories": 450, "protein": 30, "fat": 15, ' +
-      '"carbs": 48, "fiber": 4.5, "sodium": 320, "sugar": 5, "ai_recommendation": ""}'
-  );
-
-  return lines.join(' ');
-}
-
-/** Собирает мультимодальный контент: текст состава + фото, если есть */
-function buildMealContent(ingredients, drinks, title, photoDataUrl) {
-  const parts = [
-    { type: 'text', text: buildMealPrompt(ingredients, drinks, title, Boolean(photoDataUrl)) },
-  ];
-  if (photoDataUrl) {
-    parts.push({ type: 'image_url', image_url: { url: photoDataUrl } });
-  }
-  return parts;
-}
 
 /* =========================================================
    12б. ИНГРЕДИЕНТЫ: СТРОКИ ВВОДА
@@ -1454,6 +1310,57 @@ function resetIngredients() {
    ========================================================= */
 
 /** Проверяет и нормализует распознанный приём пищи */
+/**
+ * Позиции из ответа модели. Некорректные строки отбрасываются.
+ * Возвращает массив {name, grams, kcal, protein, fats, carbs} или [].
+ */
+function parseItems(raw) {
+  if (!Array.isArray(raw)) return [];
+  const num = (v) => {
+    const n = Number(v);
+    return Number.isFinite(n) && n >= 0 ? n : 0;
+  };
+  return raw
+    .filter((it) => it && typeof it === 'object' && String(it.name || '').trim())
+    .map((it) => ({
+      name: String(it.name).trim().slice(0, 80),
+      grams: num(it.grams ?? it.ml),
+      kcal: num(it.calories),
+      protein: num(it.protein),
+      fats: num(it.fat ?? it.fats),
+      carbs: num(it.carbs),
+    }));
+}
+
+/**
+ * Итог приёма. Если модель прислала позиции, итог — сумма позиций
+ * (карточка всегда сходится со списком). Иначе — итог из ответа модели.
+ */
+function totalsFromItems(items, fallback) {
+  if (!items.length) return { ...fallback, source: 'model' };
+  const sum = items.reduce(
+    (acc, it) => ({
+      kcal: acc.kcal + it.kcal,
+      protein: acc.protein + it.protein,
+      fats: acc.fats + it.fats,
+      carbs: acc.carbs + it.carbs,
+    }),
+    { kcal: 0, protein: 0, fats: 0, carbs: 0 }
+  );
+  if (sum.kcal > 0 && Math.abs(sum.kcal - (fallback.kcal || 0)) > 0) {
+    console.warn('Итог модели не совпал с суммой позиций:', {
+      модель: fallback.kcal, сумма: Math.round(sum.kcal),
+    });
+  }
+  return {
+    kcal: Math.round(sum.kcal),
+    protein: Math.round(sum.protein),
+    fats: Math.round(sum.fats),
+    carbs: Math.round(sum.carbs),
+    source: 'items',
+  };
+}
+
 function normalizeMeal(data) {
   // Число или null. null значит «модель не вернула» — в сумму такое не идёт,
   // иначе клетчатка окажется ниже реальной, а натрий — идеальным
@@ -1463,12 +1370,22 @@ function normalizeMeal(data) {
     return Number.isFinite(n) && n >= 0 ? n : null;
   };
 
-  const meal = {
-    title: String(data.title || 'Приём пищи').slice(0, 80),
+  const items = parseItems(data.items);
+  const totals = totalsFromItems(items, {
     kcal: round(data.calories),
     protein: round(data.protein),
     fats: round(data.fat ?? data.fats),
     carbs: round(data.carbs),
+  });
+
+  const meal = {
+    title: String(data.title || 'Приём пищи').slice(0, 80),
+    kcal: totals.kcal,
+    protein: totals.protein,
+    fats: totals.fats,
+    carbs: totals.carbs,
+    items,
+    totalSource: totals.source,
     fiber: micro(data.fiber),
     sodium: micro(data.sodium),
     sugar: micro(data.sugar),
@@ -1483,6 +1400,15 @@ function normalizeMeal(data) {
   return valid ? meal : null;
 }
 
+/**
+ * Отправка приёма пищи на сервер.
+ *
+ * Сервер сам:
+ *  - подставляет ключ OpenRouter;
+ *  - знает цель и проценты БЖУ пользователя;
+ *  - сохраняет приём в Supabase;
+ *  - возвращает готовые цифры и совет ИИ.
+ */
 async function handleMealSubmit(event) {
   event.preventDefault();
 
@@ -1494,8 +1420,8 @@ async function handleMealSubmit(event) {
   const ingredients = readIngredients();
   const drinks = readDrinks();
 
-  if (!ingredients.length && !drinks.length) {
-    setFormError(form, 'Добавьте хотя бы один продукт или напиток с названием и количеством.');
+  if (!ingredients.length && !drinks.length && !state.pendingPhoto?.dataUrl) {
+    setFormError(form, 'Добавьте хотя бы один продукт, напиток или фото.');
     return;
   }
 
@@ -1503,83 +1429,76 @@ async function handleMealSubmit(event) {
   const restore = setButtonLoading(button, 'ИИ анализирует…');
 
   try {
-    // Если фото ещё обрабатывается — дождёмся, иначе уйдёт запрос без картинки
+    // Фото могло ещё обрабатываться — дождёмся, иначе уйдёт запрос без картинки
     if (state.photoTask) await state.photoTask;
-
-    const content = buildMealContent(ingredients, drinks, nameInput, state.pendingPhoto?.dataUrl);
-    const raw = await callModel(content, 400);
-
-    // --- НАЧАЛО ДИАГНОСТИЧЕСКОГО ЛОГА ---
-    console.log("Сырой ответ от ИИ:", raw);
-    const parsedJson = parseModelJson(raw);
-    console.log("JSON после parseModelJson:", parsedJson);
-    const analyzed = normalizeMeal(parsedJson);
-    console.log("Распарсенный КБЖУ блюда:", analyzed);
-    // --- КОНЕЦ ДИАГНОСТИЧЕСКОГО ЛОГА ---
-
-    if (!analyzed) throw new Error('Не удалось распознать приём пищи');
 
     const now = new Date();
     const time = now.toTimeString().slice(0, 5);
+
+    const data = await apiFetch('/api/analyze-meal', {
+      method: 'POST',
+      body: {
+        ingredients,
+        drinks,
+        photo: state.pendingPhoto?.dataUrl || '',
+        title: nameInput,
+        time,
+        date: toISODate(now),
+      },
+    });
+
+    const meal = data.meal;
+    console.log('Приём сохранён на сервере:', meal);
+
+    // Собираем запись для локального кэша и карточки истории
     const record = {
-      date: toISODate(now),
-      time,
-      category: mealCategoryFor(time),
-      title: nameInput || analyzed.title,
+      id: meal.id,
+      date: meal.date,
+      time: meal.time,
+      category: meal.category || mealCategoryFor(meal.time),
+      title: meal.title,
       ingredients,
       drinks,
       grams: totalGrams(ingredients),
       ml: totalMl(drinks),
-      kcal: analyzed.kcal,
-      protein: analyzed.protein,
-      fats: analyzed.fats,
-      carbs: analyzed.carbs,
-      fiber: analyzed.fiber,
-      sodium: analyzed.sodium,
-      sugar: analyzed.sugar,
-      ai_recommendation: analyzed.ai_recommendation || '',
+      kcal: meal.calories,
+      protein: meal.protein,
+      fats: meal.fats,
+      carbs: meal.carbs,
+      fiber: meal.fiber,
+      sodium: meal.sodium,
+      sugar: meal.sugar,
+      ai_recommendation: meal.ai_recommendation || '',
+      items: meal.items || [],
       photo: state.pendingPhoto?.thumb || state.existingPhoto || '',
     };
 
     if (state.editingMealId !== null) {
-      // Режим правки: перезаписываем существующую запись, время и дату сохраняем
       const index = state.meals.findIndex((m) => m.id === state.editingMealId);
       if (index >= 0) {
-        record.id = state.meals[index].id;
-        record.date = state.meals[index].date;
-        record.time = state.meals[index].time;
-        // Категорию не пересчитываем: правка состава не должна
-        // переносить утренний завтрак в ужин
-        record.category = state.meals[index].category || record.category;
+        // Правка сохраняется как новый приём: старую запись убираем из кэша
         state.meals[index] = record;
       } else {
-        record.id = Date.now();
         state.meals.push(record);
       }
     } else {
-      record.id = Date.now();
       state.meals.push(record);
     }
 
     state.dayIndex = indexMealsByDay(state.meals);
-
-    if (!save(STORAGE_KEYS.meals, state.meals)) {
-      // Квота закончилась: убираем фото у этой записи и пробуем снова
-      const target = state.meals.find((m) => m.id === record.id);
-      if (target) target.photo = '';
-      save(STORAGE_KEYS.meals, state.meals);
-    }
+    save(STORAGE_KEYS.meals, state.meals);
 
     const wasEditing = state.editingMealId !== null;
     closeModal($('modal-add-meal'));
     renderAll();
     toast(
-      wasEditing ? `Обновлено: ${analyzed.kcal} ккал` : `${analyzed.kcal} ккал · записано`,
+      wasEditing ? `Обновлено: ${meal.calories} ккал` : `${meal.calories} ккал · записано`,
       'success'
     );
   } catch (err) {
     console.error('Распознавание не удалось:', err);
     setFormError(form, err.message);
+    toast(err.message, 'error');
   } finally {
     restore();
   }
@@ -1647,7 +1566,8 @@ function fillMetricsForm() {
   $('new-glutes').value = last.glutes;
 }
 
-function handleMetricsSubmit(event) {
+/** Новый замер: уходит на сервер, локальный кэш обновляется */
+async function handleMetricsSubmit(event) {
   event.preventDefault();
 
   const entry = {
@@ -1661,10 +1581,29 @@ function handleMetricsSubmit(event) {
   const values = [entry.weight, entry.waist, entry.hips, entry.glutes];
   if (values.some((v) => !(v > 0))) return;
 
-  upsertMetric(entry);
-  closeModal($('modal-add-metrics'));
-  renderAll();
-  toast('Замеры сохранены', 'success');
+  const button = event.target.querySelector('button[type="submit"]');
+  const restore = setButtonLoading(button, 'Сохраняем…');
+
+  try {
+    await saveMetricRemote(entry);
+
+    // Держим локальный список в том же виде, что на сервере: один замер на дату
+    const index = state.metrics.findIndex((m) => m.date === entry.date);
+    if (index >= 0) state.metrics[index] = entry;
+    else state.metrics.push(entry);
+    state.metrics.sort((a, b) => String(a.date).localeCompare(String(b.date)));
+
+    save(STORAGE_KEYS.metrics, state.metrics);
+
+    closeModal($('modal-add-metrics'));
+    renderAll();
+    toast('Замеры сохранены', 'success');
+  } catch (err) {
+    console.error('Замер не сохранён:', err);
+    toast(err.message, 'error');
+  } finally {
+    restore();
+  }
 }
 
 /* =========================================================
@@ -1985,18 +1924,6 @@ function renderSettings() {
   $('settings-goal-hint').textContent = `${meta.label}. ${meta.hint}`;
 
   renderSplitControls();
-
-  const key = getApiKey();
-  const node = $('settings-key');
-  if (!key) {
-    node.textContent = 'не задан';
-    node.classList.remove('is-set');
-    return;
-  }
-  // Показываем только начало и конец — так видно, что ключ тот самый,
-  // но целиком он не светится на случай, если кто-то смотрит на экран
-  node.textContent = `${key.slice(0, 8)}…${key.slice(-4)}`;
-  node.classList.add('is-set');
 }
 
 /**
@@ -2009,21 +1936,24 @@ function renderSettings() {
  *  3. Обновляются ТОЛЬКО профиль и цели. Приёмы пищи и замеры не трогаются,
  *     поэтому история и графики остаются на месте.
  */
+/**
+ * Смена цели. Сервер пересчитывает норму калорий под текущий вес,
+ * проценты БЖУ сбрасываются к пресету новой цели.
+ */
 async function changeGoal(nextGoal) {
   const meta = GOALS_META[nextGoal];
   if (!meta) return;
-  if (state.profile?.goal === nextGoal) return; // уже выбрана
+  if (state.profile?.goal === nextGoal) return;
 
   const container = $('settings-goal');
   const status = $('settings-goal-status');
   const buttons = [...container.querySelectorAll('.segmented-item')];
 
-  // Блокируем переключатель на время запроса
   buttons.forEach((btn) => {
     btn.disabled = true;
   });
   status.classList.remove('hidden');
-  status.textContent = 'ИИ пересчитывает норму…';
+  status.textContent = 'Пересчитываем норму…';
 
   // Актуальные параметры тела: последний замер важнее данных онбординга
   const last = state.metrics[state.metrics.length - 1];
@@ -2036,17 +1966,13 @@ async function changeGoal(nextGoal) {
     glutes: last?.glutes ?? state.profile?.glutes ?? 0,
   };
 
-  let goals = null;
-  let failed = false;
-
+  let saved = null;
   try {
-    const raw = await callModel(buildGoalsPrompt(profile), 300);
-    goals = normalizeGoals(parseModelJson(raw), nextGoal);
-    if (!goals) throw new Error('Модель вернула некорректные значения');
+    saved = await saveProfileRemote(profile);
   } catch (err) {
     console.error('Пересчёт цели не удался:', err);
-    goals = defaultGoalsFor(nextGoal);
-    failed = true;
+    toast(err.message, 'error');
+    return;
   } finally {
     buttons.forEach((btn) => {
       btn.disabled = false;
@@ -2054,36 +1980,38 @@ async function changeGoal(nextGoal) {
     status.classList.add('hidden');
   }
 
-  // Сохраняем только профиль и цели — история остаётся нетронутой
-  // Смена цели сбрасывает ручные проценты к пресету новой цели:
-  // иначе ползунки конфликтовали бы с рекомендациями под цель
-  goals = goalsFromSplit(goals.kcal, defaultSplitFor(nextGoal), 'goal');
+  state.profile = saved.profile;
+  state.goals = normalizeGoalsShape(saved.goals, nextGoal);
 
-  state.profile = profile;
-  state.goals = goals;
-  save(STORAGE_KEYS.profile, profile);
-  save(STORAGE_KEYS.goals, goals);
+  save(STORAGE_KEYS.profile, state.profile);
+  save(STORAGE_KEYS.goals, state.goals);
 
   renderSettings();
+  renderTargetSplit();
   renderAll();
-
-  if (failed) {
-    toast(`Цель: ${meta.label}. Применены значения по умолчанию ${goals.kcal} ккал`, 'info');
-  } else {
-    toast(`Цель: ${meta.label}. Норма ${goals.kcal} ккал`, 'success');
-  }
+  toast(`Цель: ${meta.label}`, 'success');
 }
 
 /**
  * Удаляет данные пользователя и возвращает приложение на онбординг.
  * keepKey = true оставляет ключ OpenRouter (частый случай при тестах).
  */
-function resetAllData({ keepKey = true } = {}) {
-  const keys = [STORAGE_KEYS.profile, STORAGE_KEYS.goals, STORAGE_KEYS.metrics, STORAGE_KEYS.meals];
+/**
+ * Сброс данных.
+ * keepKey оставлен для совместимости с прежними вызовами: ключа в браузере больше нет.
+ * Данные удаляются и на сервере, иначе при следующем открытии они вернутся из Supabase.
+ */
+async function resetAllData() {
+  const keys = [STORAGE_KEYS.profile, STORAGE_KEYS.goals, STORAGE_KEYS.metrics, STORAGE_KEYS.meals, STORAGE_KEYS.notes];
   keys.forEach((key) => localStorage.removeItem(key));
-  if (!keepKey) localStorage.removeItem(API_KEY_STORAGE);
 
-  // Сбрасываем состояние в памяти, иначе старые данные останутся в интерфейсе
+  try {
+    await apiFetch('/api/data', { method: 'DELETE', body: {} });
+  } catch (err) {
+    console.warn('Серверные данные не удалены:', err.message);
+    toast('Локальные данные удалены, серверные — нет: ' + err.message, 'error');
+  }
+
   state.profile = null;
   state.goalDraft = DEFAULT_GOAL;
   state.goals = defaultGoalsFor(DEFAULT_GOAL);
@@ -2098,7 +2026,7 @@ function resetAllData({ keepKey = true } = {}) {
   closeAllModals();
   showOnboarding();
   renderAll();
-  toast(keepKey ? 'Данные сброшены, ключ сохранён' : 'Всё удалено, включая ключ', 'success');
+  toast('Данные удалены', 'success');
 }
 
 /**
@@ -2147,7 +2075,11 @@ function confirmTwice(button, question, onConfirm) {
  * Возвращает проценты БЖУ к пресету цели.
  * Калории не трогаем — они уже посчитаны под пользователя.
  */
-function resetSplitToGoal() {
+/**
+ * Возвращает проценты БЖУ к пресету цели.
+ * Калории не трогаем — они посчитаны под пользователя.
+ */
+async function resetSplitToGoal() {
   const goal = state.profile?.goal || DEFAULT_GOAL;
   const kcal = Number(state.goals.kcal) || 0;
 
@@ -2156,6 +2088,15 @@ function resetSplitToGoal() {
 
   renderSplitControls();
   renderTargetSplit();
+
+  try {
+    const data = await saveGoalsRemote(state.goals);
+    state.goals = normalizeGoalsShape(data.goals, goal);
+    save(STORAGE_KEYS.goals, state.goals);
+  } catch (err) {
+    console.warn('Сброс не сохранён на сервере:', err.message);
+  }
+
   toast(`Проценты БЖУ сброшены к цели: ${GOALS_META[goal].label}`, 'success');
 }
 
@@ -2210,17 +2151,34 @@ function renderSplitControls() {
  * Двигает один ползунок: оставшиеся проценты делятся между двумя другими
  * пропорционально их текущим значениям. Сумма всегда ровно 100.
  */
+/**
+ * Двигает один ползунок: оставшиеся проценты делятся между двумя другими
+ * пропорционально их текущим значениям. Сумма всегда ровно 100.
+ * Раскладка сохраняется на сервере, чтобы она была доступна боту и другим устройствам.
+ */
+let splitSaveTimer = null;
+
 function handleSliderInput(key, value) {
   const nextSplit = distributeSplit(key, value, currentSplit());
   const kcal = Number(state.goals.kcal) || 0;
 
-  // Граммы пересчитываем из процентов — так цели и шкала не расходятся.
-  // Источник 'manual': пользователь настроил раскладку под себя
   state.goals = goalsFromSplit(kcal, nextSplit, 'manual');
   save(STORAGE_KEYS.goals, state.goals);
 
   renderSplitControls();
   renderTargetSplit();
+
+  // Сохраняем не на каждое движение пальцем, а через паузу
+  clearTimeout(splitSaveTimer);
+  splitSaveTimer = setTimeout(async () => {
+    try {
+      const data = await saveGoalsRemote(state.goals);
+      state.goals = normalizeGoalsShape(data.goals, state.profile?.goal);
+      save(STORAGE_KEYS.goals, state.goals);
+    } catch (err) {
+      console.warn('Раскладка БЖУ не сохранена на сервере:', err.message);
+    }
+  }, 600);
 }
 
 function initSplitSliders() {
@@ -2240,18 +2198,6 @@ function initSettings() {
     openModal($('modal-settings'));
   });
 
-  // Замена ключа: удаляем старый и открываем окно ввода заново
-  $('btn-change-key').addEventListener('click', async () => {
-    localStorage.removeItem(API_KEY_STORAGE);
-    closeModal($('modal-settings'));
-
-    const key = await askForApiKey();
-    if (key) {
-      toast('Ключ обновлён', 'success');
-      renderSettings();
-    }
-  });
-
   // Переключение цели без потери прогресса
   $('settings-goal').addEventListener('click', (event) => {
     const btn = event.target.closest('.segmented-item');
@@ -2261,13 +2207,7 @@ function initSettings() {
 
   $('btn-reset-data').addEventListener('click', (event) => {
     confirmTwice(event.currentTarget, 'Точно удалить данные?', () => {
-      resetAllData({ keepKey: true });
-    });
-  });
-
-  $('btn-reset-all').addEventListener('click', (event) => {
-    confirmTwice(event.currentTarget, 'Точно всё удалить?', () => {
-      resetAllData({ keepKey: false });
+      resetAllData();
     });
   });
 }
@@ -2277,7 +2217,7 @@ function initSettings() {
    ========================================================= */
 
 function init() {
-  loadState();
+  loadStateFromCache();
   initTabs();
   initOnboarding();
   initModals();
@@ -2294,6 +2234,9 @@ function init() {
 
   resetIngredients();
   renderAll();
+
+  // Сеть подключаем после отрисовки: интерфейс не ждёт сервер
+  syncFromServer();
 }
 
 // Запускаем сразу, если DOM уже разобран, иначе ждём DOMContentLoaded
