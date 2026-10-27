@@ -9,10 +9,10 @@
   <!--
     ВЕРСИОНИРОВАНИЕ КЭША.
     При каждом обновлении style.css или app.js увеличьте число в ?v=
-    у обеих ссылок ниже (сейчас v=13). Иначе Chrome на Android может
+    у обеих ссылок ниже (сейчас v=19). Иначе Chrome на Android может
     показывать старые файлы из кэша.
   -->
-  <link rel="stylesheet" href="style.css?v=13">
+  <link rel="stylesheet" href="style.css?v=19">
 </head>
 <body class="is-onboarding">
 
@@ -449,27 +449,12 @@
         </section>
 
         <section class="settings-section">
-          <h4>Ключ OpenRouter</h4>
-          <p class="form-hint">Хранится только на этом устройстве.</p>
-          <div class="settings-row">
-            <code class="settings-key" id="settings-key">не задан</code>
-            <button class="btn-link" id="btn-change-key" type="button">Заменить</button>
-          </div>
-        </section>
-
-        <section class="settings-section">
           <h4>Сброс данных</h4>
           <p class="form-hint">
-            Удаляет профиль, приёмы пищи и замеры с этого устройства. Ключ остаётся.
+            Удаляет профиль, приёмы пищи, замеры и заметки — и на этом устройстве, и на сервере.
             После сброса снова откроется онбординг.
           </p>
           <button class="btn-danger" id="btn-reset-data" type="button">Сбросить все данные</button>
-        </section>
-
-        <section class="settings-section">
-          <h4>Полный сброс</h4>
-          <p class="form-hint">Удаляет всё, включая ключ OpenRouter.</p>
-          <button class="btn-danger btn-danger-ghost" id="btn-reset-all" type="button">Сбросить всё и удалить ключ</button>
         </section>
       </div>
     </div>
@@ -505,6 +490,6 @@
     </div>
   </div>
 
-  <script src="app.js?v=13"></script>
+  <script src="app.js?v=19"></script>
 </body>
 </html>
