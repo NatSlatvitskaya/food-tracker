@@ -39,6 +39,8 @@ const CONFIG = {
   // Только для локальной отладки: разрешает telegram_id без подписи Telegram
   allowDevAuth: process.env.ALLOW_DEV_AUTH === 'true',
   requestTimeoutMs: Number(process.env.REQUEST_TIMEOUT_MS || 60000),
+  // Сколько ждём модель при расчёте нормы. Дольше — считаем формулой
+  goalsTimeoutMs: Number(process.env.GOALS_TIMEOUT_MS || 8000),
   maxImageBytes: Number(process.env.MAX_IMAGE_BYTES || 8 * 1024 * 1024),
 };
 
@@ -395,7 +397,7 @@ function totalsFromItems(items, fallback) {
 }
 
 /** Нормализует ответ модели в формат фронтенда */
-function normalizeMeal(data, { date, time, category, title }) {
+function normalizeMeal(data, { date, time, category, title, ingredients, drinks }) {
   const items = parseItems(data.items);
   const totals = totalsFromItems(items, {
     kcal: roundTo(data.calories, 0),
@@ -424,6 +426,9 @@ function normalizeMeal(data, { date, time, category, title }) {
       typeof data.ai_recommendation === 'string' ? data.ai_recommendation.trim().slice(0, 300) : '',
     items,
     totalSource: totals.source,
+    // Состав из формы: в базу уходит как есть, модели не нужен
+    ingredients: Array.isArray(ingredients) ? ingredients : [],
+    drinks: Array.isArray(drinks) ? drinks : [],
   };
 }
 
@@ -465,6 +470,262 @@ function profileSplit(profile) {
   return presets[profile.goal] || presets.maintain;
 }
 
+/** Пресеты БЖУ по цели — те же, что во фронтенде */
+const MACRO_SPLIT_BY_GOAL = {
+  lose: { protein: 35, fats: 30, carbs: 35 },
+  maintain: { protein: 25, fats: 30, carbs: 45 },
+  gain: { protein: 30, fats: 25, carbs: 45 },
+};
+
+const GOAL_INSTRUCTIONS = {
+  lose:
+    'Цель — снижение веса. Рассчитай норму поддержания и создай дефицит 15-20%.',
+  maintain:
+    'Цель — удержание веса. Норма равна суточным тратам, без дефицита и профицита.',
+  gain:
+    'Цель — набор мышечной массы. Рассчитай норму поддержания и добавь профицит 10-15%.',
+};
+
+/** Граммы из процентов: белки и углеводы 4 ккал/г, жиры 9 ккал/г */
+function gramsFromSplit(kcal, split) {
+  return {
+    protein: roundTo((kcal * split.protein) / 100 / 4, 1),
+    fats: roundTo((kcal * split.fats) / 100 / 9, 1),
+    carbs: roundTo((kcal * split.carbs) / 100 / 4, 1),
+  };
+}
+
+function goalsFromSplit(kcal, split, splitSource = 'goal') {
+  const clean = { ...split };
+  return {
+    kcal: roundTo(kcal, 0),
+    ...gramsFromSplit(kcal, clean),
+    split: clean,
+    splitSource,
+  };
+}
+
+/** Промпт расчёта нормы калорий: модель отдаёт только калории */
+function buildGoalsPrompt(profile) {
+  return [
+    'Пользователь: возраст ' + profile.age + ', вес ' + profile.currentWeight + ' кг,',
+    'замеры талия/ягодицы/бедро одной ноги ' +
+      profile.waist + '/' + profile.glutes + '/' + profile.thigh + ' см,',
+    'желаемый вес ' + profile.targetWeight + ' кг.',
+    'Главная цель: ' + (profile.goal || 'maintain') + '.',
+    GOAL_INSTRUCTIONS[profile.goal] || GOAL_INSTRUCTIONS.maintain,
+    'Рассчитай ТОЛЬКО суточную норму калорий по формуле Миффлина-Сан Жеора.',
+    'Белки, жиры и углеводы рассчитывать не нужно — их распределит приложение по цели.',
+    'Верни ответ СТРОГО в формате JSON без markdown и без лишних слов:',
+    '{"calories": 1874}',
+  ].join(' ');
+}
+
+/** Считает норму калорий моделью. При сбое — запасная формула */
+/**
+ * Норма калорий без обращения к модели: формула Миффлина-Сан Жеора.
+ * Считается мгновенно, поэтому используется первой — кнопка «Рассчитать»
+ * не должна ждать ИИ.
+ */
+function estimateGoals(profile) {
+  const goal = MACRO_SPLIT_BY_GOAL[profile.goal] ? profile.goal : 'maintain';
+  const split = MACRO_SPLIT_BY_GOAL[goal];
+
+  const age = Number(profile.age) || 30;
+  const weight = Number(profile.currentWeight) || 70;
+  const height = Number(profile.height) || 165;
+
+  // Миффлин-Сан Жеор, женская формула
+  const bmr = 10 * weight + 6.25 * height - 5 * age - 161;
+  // Коэффициент активности 1.375 — умеренная активность, безопасное допущение
+  const tdee = bmr * 1.375;
+  const factor = goal === 'lose' ? 0.82 : goal === 'gain' ? 1.12 : 1;
+  const kcal = Math.max(1200, Math.min(4500, Math.round(tdee * factor)));
+
+  return goalsFromSplit(kcal, split, 'goal');
+}
+
+/**
+ * Норма калорий с моделью.
+ *
+ * Модель может думать долго и уходить в таймаут. Чтобы ответ не висел,
+ * гонка с жёстким лимитом: не успела — берём формулу.
+ */
+async function computeGoals(profile) {
+  const goal = MACRO_SPLIT_BY_GOAL[profile.goal] ? profile.goal : 'maintain';
+  const split = MACRO_SPLIT_BY_GOAL[goal];
+  const fallback = estimateGoals(profile);
+
+  const modelLookup = (async () => {
+    const raw = await callOpenRouter(
+      [{ role: 'user', content: buildGoalsPrompt({ ...profile, goal }) }],
+      400
+    );
+    const parsed = parseModelJson(raw);
+    const kcal = roundTo(parsed.calories, 0);
+    if (kcal >= 800 && kcal <= 6000) return goalsFromSplit(kcal, split, 'goal');
+    throw new Error('модель вернула некорректную норму');
+  })();
+
+  const timeout = new Promise((resolve) => {
+    setTimeout(() => resolve(null), CONFIG.goalsTimeoutMs);
+  });
+
+  try {
+    const result = await Promise.race([modelLookup, timeout]);
+    if (result) return result;
+    console.warn(
+      'Модель не уложилась в ' + CONFIG.goalsTimeoutMs + 'мс, применена формула: ' + fallback.kcal + ' ккал'
+    );
+    // Не даём зависшему запросу уронить процесс
+    modelLookup.catch(() => {});
+  } catch (err) {
+    console.warn('Расчёт нормы моделью не удался:', err.message, '| применена формула');
+  }
+
+  return fallback;
+}
+
+/** Профиль из строки базы в формат фронтенда */
+function profileFromRow(row) {
+  if (!row) return null;
+  return {
+    age: row.age,
+    currentWeight: Number(row.current_weight),
+    targetWeight: Number(row.target_weight),
+    waist: Number(row.waist),
+    glutes: Number(row.glutes),
+    thigh: Number(row.thigh),
+    goal: row.goal,
+  };
+}
+
+/** Цели из строки базы */
+function goalsFromRow(row) {
+  if (!row) return null;
+  const split = {
+    protein: Number(row.split_protein),
+    fats: Number(row.split_fats),
+    carbs: Number(row.split_carbs),
+  };
+  return goalsFromSplit(Number(row.target_kcal) || 2000, split, row.split_source || 'goal');
+}
+
+/**
+ * Создаёт или обновляет профиль. Если цели не переданы — считает их.
+ * Профиль создаётся при первом обращении: meals_history ссылается на него.
+ */
+async function upsertProfile(telegramId, profile, splitOverride) {
+  const existing = await loadProfile(telegramId);
+
+  const goals = splitOverride
+    ? goalsFromSplit(Number(profile.kcal) || Number(existing?.target_kcal) || 2000, splitOverride, 'manual')
+    : await computeGoals(profile);
+
+  const row = {
+    telegram_id: telegramId,
+    age: Number(profile.age) || null,
+    current_weight: Number(profile.currentWeight) || null,
+    target_weight: Number(profile.targetWeight) || null,
+    waist: Number(profile.waist) || null,
+    glutes: Number(profile.glutes) || null,
+    thigh: Number(profile.thigh) || null,
+    goal: profile.goal || 'maintain',
+    target_kcal: goals.kcal,
+    split_protein: goals.split.protein,
+    split_fats: goals.split.fats,
+    split_carbs: goals.split.carbs,
+    split_source: goals.splitSource,
+  };
+
+  const { data, error } = await getSupabase()
+    .from('users_profile')
+    .upsert(row, { onConflict: 'telegram_id' })
+    .select()
+    .single();
+
+  if (error) {
+    console.error('Supabase: upsert users_profile не удался', {
+      message: error.message, details: error.details, hint: error.hint, code: error.code,
+    });
+    throw new Error('Не удалось сохранить профиль: ' + error.message);
+  }
+  return { profile: profileFromRow(data), goals: goalsFromRow(data) };
+}
+
+/**
+ * Разбирает и валидирует тело запроса на анализ.
+ * Возвращает { food, liquid, imageUrl, error } — error содержит текст 400/413.
+ */
+function parseMealRequest(body) {
+  const { ingredients = [], drinks = [], photo = '', title = '' } = body || {};
+
+  if (!Array.isArray(ingredients) || !Array.isArray(drinks)) {
+    return { error: { status: 400, message: 'ingredients и drinks должны быть массивами' } };
+  }
+
+  const food = ingredients
+    .filter((i) => i && String(i.name || '').trim() && Number(i.grams) > 0)
+    .map((i) => ({ name: String(i.name).trim().slice(0, 120), grams: Number(i.grams) }));
+
+  const liquid = drinks
+    .filter((d) => d && String(d.name || '').trim() && Number(d.ml) > 0)
+    .map((d) => ({ name: String(d.name).trim().slice(0, 120), ml: Number(d.ml) }));
+
+  let imageUrl = '';
+  if (photo) {
+    if (typeof photo !== 'string') {
+      return { error: { status: 400, message: 'photo должен быть строкой base64' } };
+    }
+    imageUrl = photo.startsWith('data:') ? photo : 'data:image/jpeg;base64,' + photo;
+    const approxBytes = Math.round((imageUrl.length * 3) / 4);
+    if (approxBytes > CONFIG.maxImageBytes) {
+      return { error: { status: 413, message: 'Фото слишком большое, сожмите его перед отправкой' } };
+    }
+  }
+
+  if (!food.length && !liquid.length && !imageUrl) {
+    return { error: { status: 400, message: 'Добавьте хотя бы один продукт или фото' } };
+  }
+
+  return { food, liquid, imageUrl, title: String(title || '').trim() };
+}
+
+/**
+ * Просит модель оценить приём и приводит ответ к формату базы.
+ * date и time можно передать снаружи — при правке они не меняются.
+ */
+async function analyzeMealRequest({ food, liquid, imageUrl, title, telegramId, date, time }) {
+  const mealDate = DATE_RE.test(String(date || '')) ? String(date) : toISODate();
+  const mealTime = TIME_RE.test(String(time || '')) ? String(time) : toHHMM();
+  const category = mealCategoryFor(mealTime);
+
+  const profile = await loadProfile(telegramId);
+  const prompt = buildMealPrompt({
+    ingredients: food,
+    drinks: liquid,
+    title,
+    time: mealTime,
+    goalSplit: profileSplit(profile),
+    hasPhoto: Boolean(imageUrl),
+  });
+
+  const content = [{ type: 'text', text: prompt }];
+  if (imageUrl) content.push({ type: 'image_url', image_url: { url: imageUrl } });
+
+  const raw = await callOpenRouter([{ role: 'user', content }]);
+  const parsed = parseModelJson(raw);
+
+  return normalizeMeal(parsed, {
+    date: mealDate,
+    time: mealTime,
+    category,
+    title,
+    ingredients: food,
+    drinks: liquid,
+  });
+}
+
 /** Сохраняет приём пищи и возвращает запись с id */
 async function saveMeal(telegramId, meal) {
   const row = {
@@ -473,6 +734,9 @@ async function saveMeal(telegramId, meal) {
     time: meal.time,
     category: meal.category,
     title: meal.title,
+    // Состав нужен, чтобы карандаш в истории открыл форму с продуктами
+    ingredients: meal.ingredients || [],
+    drinks: meal.drinks || [],
     calories: meal.calories,
     protein: meal.protein,
     fats: meal.fats,
@@ -490,7 +754,12 @@ async function saveMeal(telegramId, meal) {
     .select()
     .single();
 
-  if (error) throw new Error('Не удалось сохранить приём пищи: ' + error.message);
+  if (error) {
+    console.error('Supabase: insert meals_history не удался', {
+      message: error.message, details: error.details, hint: error.hint, code: error.code,
+    });
+    throw new Error('Не удалось сохранить приём пищи: ' + error.message);
+  }
   return data;
 }
 
@@ -538,16 +807,37 @@ const BOT_STATE = { running: false, username: '', startedAt: null, lastError: ''
 const app = express();
 app.disable('x-powered-by');
 
+/*
+  CORS.
+
+  Отдельно про Origin: 'null'. Внутри вебвью Telegram страница иногда
+  открывается как sandboxed iframe, и браузер отправляет Origin: null.
+  Это не дыра в защите: доступ к данным всё равно закрыт подписью
+  initData, которую проверяет authenticate(). Поэтому 'null' пропускаем —
+  иначе кнопки в Mini App молча не работают.
+*/
 app.use(
   cors({
     origin(origin, callback) {
-      // Запросы без Origin (curl, серверные) пропускаем
+      // Запросы без Origin (curl, серверные вызовы) пропускаем
       if (!origin) return callback(null, true);
+
+      // Песочница Telegram WebView
+      if (origin === 'null') return callback(null, true);
+
+      // Если список не задан — не ограничиваем (удобно на первом запуске)
       if (!CONFIG.allowedOrigins.length) return callback(null, true);
+
       if (CONFIG.allowedOrigins.includes(origin)) return callback(null, true);
+
+      console.error(
+        'CORS: Origin не разрешён:', origin,
+        '| разрешены:', CONFIG.allowedOrigins.join(', '),
+        '| добавьте домен в переменную ALLOWED_ORIGINS на Render'
+      );
       return callback(new Error('Origin не разрешён: ' + origin));
     },
-    methods: ['GET', 'POST', 'OPTIONS'],
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'x-telegram-init-data'],
     maxAge: 86400,
   })
@@ -599,82 +889,122 @@ app.post('/api/analyze-meal', async (req, res) => {
     const user = authenticate(req);
     if (!user) return res.status(401).json({ error: 'Нет достоверной авторизации Telegram' });
 
-    const { ingredients = [], drinks = [], photo = '', title = '', time, date } = req.body || {};
-
-    if (!Array.isArray(ingredients) || !Array.isArray(drinks)) {
-      return res.status(400).json({ error: 'ingredients и drinks должны быть массивами' });
+    const parsed = parseMealRequest(req.body);
+    if (parsed.error) {
+      return res.status(parsed.error.status).json({ error: parsed.error.message });
     }
 
-    const food = ingredients
-      .filter((i) => i && String(i.name || '').trim() && Number(i.grams) > 0)
-      .map((i) => ({ name: String(i.name).trim().slice(0, 120), grams: Number(i.grams) }));
-
-    const liquid = drinks
-      .filter((d) => d && String(d.name || '').trim() && Number(d.ml) > 0)
-      .map((d) => ({ name: String(d.name).trim().slice(0, 120), ml: Number(d.ml) }));
-
-    if (!food.length && !liquid.length && !photo) {
-      return res.status(400).json({ error: 'Добавьте хотя бы один продукт или фото' });
-    }
-
-    // Проверка размера фото
-    let imageUrl = '';
-    if (photo) {
-      if (typeof photo !== 'string') {
-        return res.status(400).json({ error: 'photo должен быть строкой base64' });
-      }
-      imageUrl = photo.startsWith('data:') ? photo : 'data:image/jpeg;base64,' + photo;
-      const approxBytes = Math.round((imageUrl.length * 3) / 4);
-      if (approxBytes > CONFIG.maxImageBytes) {
-        return res.status(413).json({ error: 'Фото слишком большое, сожмите его перед отправкой' });
-      }
-    }
-
-    const mealDate = DATE_RE.test(String(date || '')) ? String(date) : toISODate();
-    const mealTime = TIME_RE.test(String(time || '')) ? String(time) : toHHMM();
-    const category = mealCategoryFor(mealTime);
-
-    const profile = await loadProfile(user.id);
-    const prompt = buildMealPrompt({
-      ingredients: food,
-      drinks: liquid,
-      title,
-      time: mealTime,
-      goalSplit: profileSplit(profile),
-      hasPhoto: Boolean(imageUrl),
-    });
-
-    const content = [{ type: 'text', text: prompt }];
-    if (imageUrl) content.push({ type: 'image_url', image_url: { url: imageUrl } });
-
-    const raw = await callOpenRouter([{ role: 'user', content }]);
-    const parsed = parseModelJson(raw);
-    const meal = normalizeMeal(parsed, {
-      date: mealDate,
-      time: mealTime,
-      category,
-      title,
+    const meal = await analyzeMealRequest({
+      ...parsed,
+      telegramId: user.id,
+      date: req.body?.date,
+      time: req.body?.time,
     });
 
     const saved = await saveMeal(user.id, meal);
-
-    res.json({
-      ok: true,
-      meal: { ...meal, id: saved.id },
-    });
+    res.json({ ok: true, meal: { ...meal, id: saved.id } });
   } catch (err) {
-    console.error('analyze-meal:', err.message);
+    console.error('analyze-meal: не удалось проанализировать приём', {
+      message: err.message,
+      code: err.code || null,
+      providerStatus: err.status || null,
+      model: CONFIG.model,
+    });
     const status = err.status === 'timeout' ? 504 : err.status === 401 ? 401 : 500;
     res.status(status).json({ error: err.message });
   }
 });
 
 /**
- * GET /api/history?date=YYYY-MM-DD
- * Заголовок: x-telegram-init-data
+ * PUT /api/meals/:id
  *
- * Ответ: приёмы за день, сумма и заметка — для календаря.
+ * Правка существующего приёма. Отличие от POST:
+ *   • обновляет запись по id, а не создаёт новую;
+ *   • сохраняет исходные date, time и category — правка состава
+ *     не должна переносить утренний завтрак в вечер;
+ *   • проверяет, что запись принадлежит этому пользователю.
+ *
+ * Ответ: обновлённый приём с тем же id.
  */
+app.put('/api/meals/:id', async (req, res) => {
+  try {
+    const user = authenticate(req);
+    if (!user) return res.status(401).json({ error: 'Нет достоверной авторизации Telegram' });
+
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) {
+      return res.status(400).json({ error: 'Некорректный id приёма' });
+    }
+
+    // Запись должна существовать и принадлежать этому пользователю
+    const { data: existing, error: findError } = await getSupabase()
+      .from('meals_history')
+      .select('*')
+      .eq('id', id)
+      .eq('telegram_id', user.id)
+      .maybeSingle();
+
+    if (findError) throw new Error(findError.message);
+    if (!existing) {
+      return res.status(404).json({ error: 'Приём не найден' });
+    }
+
+    const parsed = parseMealRequest(req.body);
+    if (parsed.error) {
+      return res.status(parsed.error.status).json({ error: parsed.error.message });
+    }
+
+    const meal = await analyzeMealRequest({
+      ...parsed,
+      telegramId: user.id,
+      // Дата, время и категория остаются прежними
+      date: existing.date,
+      time: existing.time,
+    });
+
+    const { data, error } = await getSupabase()
+      .from('meals_history')
+      .update({
+        title: meal.title,
+        calories: meal.calories,
+        protein: meal.protein,
+        fats: meal.fats,
+        carbs: meal.carbs,
+        fiber: meal.fiber,
+        sodium: meal.sodium,
+        sugar: meal.sugar,
+        ai_recommendation: meal.ai_recommendation,
+        items: meal.items,
+        ingredients: meal.ingredients,
+        drinks: meal.drinks,
+      })
+      .eq('id', id)
+      .eq('telegram_id', user.id)
+      .select()
+      .single();
+
+    if (error) throw new Error('Не удалось обновить приём: ' + error.message);
+
+    res.json({
+      ok: true,
+      meal: {
+        ...meal,
+        id: data.id,
+        date: data.date,
+        time: data.time,
+        category: data.category,
+      },
+    });
+  } catch (err) {
+    console.error('meals PUT: не удалось обновить приём', {
+      message: err.message, code: err.code || null, providerStatus: err.status || null,
+      id: req.params?.id,
+    });
+    const status = err.status === 'timeout' ? 504 : err.status === 401 ? 401 : 500;
+    res.status(status).json({ error: err.message });
+  }
+});
+
 app.get('/api/history', async (req, res) => {
   try {
     const initData = req.get('x-telegram-init-data') || req.query.initData || '';
@@ -718,7 +1048,266 @@ app.get('/api/history', async (req, res) => {
       note: note?.note ?? null,
     });
   } catch (err) {
-    console.error('history:', err.message);
+    console.error('history: не удалось прочитать архив', {
+      message: err.message, detail: err.details || err.hint || null, code: err.code || null,
+      date: req.query?.date,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ---------- Профиль и цели ---------- */
+
+/**
+ * GET /api/profile
+ * Возвращает профиль и цели. Если профиля нет — 404, фронтенд покажет онбординг.
+ */
+app.get('/api/profile', async (req, res) => {
+  try {
+    const initData = req.get('x-telegram-init-data') || req.query.initData || '';
+    let user = verifyInitData(initData);
+    if (!user && CONFIG.allowDevAuth && req.query.telegramId) {
+      const id = Number(req.query.telegramId);
+      if (Number.isInteger(id) && id > 0) user = { id };
+    }
+    if (!user) return res.status(401).json({ error: 'Нет достоверной авторизации Telegram' });
+
+    const row = await loadProfile(user.id);
+    if (!row) return res.status(404).json({ error: 'Профиль не найден', onboarding: true });
+
+    res.json({ ok: true, profile: profileFromRow(row), goals: goalsFromRow(row) });
+  } catch (err) {
+    console.error('profile GET: не удалось прочитать профиль', {
+      message: err.message,
+      detail: err.details || err.hint || null,
+      code: err.code || null,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/profile
+ * Тело: { profile: { age, currentWeight, targetWeight, waist, glutes, thigh, goal } }
+ * Создаёт или обновляет профиль и считает норму калорий.
+ */
+app.post('/api/profile', async (req, res) => {
+  try {
+    const user = authenticate(req);
+    if (!user) return res.status(401).json({ error: 'Нет достоверной авторизации Telegram' });
+
+    const profile = req.body?.profile;
+    if (!profile || typeof profile !== 'object') {
+      return res.status(400).json({ error: 'Не передан профиль' });
+    }
+    if (!(Number(profile.age) > 0) || !(Number(profile.currentWeight) > 0)) {
+      return res.status(400).json({ error: 'Нужны возраст и текущий вес' });
+    }
+
+    const saved = await upsertProfile(user.id, profile);
+    res.json({ ok: true, ...saved });
+  } catch (err) {
+    console.error('profile POST: не удалось сохранить профиль', {
+      message: err.message,
+      detail: err.details || err.hint || null,
+      code: err.code || null,
+      body: { goal: req.body?.profile?.goal, age: req.body?.profile?.age },
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/goals
+ * Тело: { kcal, split: { protein, fats, carbs } }
+ * Сохраняет ручную раскладку БЖУ. Сумма проверяется до записи.
+ */
+app.post('/api/goals', async (req, res) => {
+  try {
+    const user = authenticate(req);
+    if (!user) return res.status(401).json({ error: 'Нет достоверной авторизации Telegram' });
+
+    const { kcal, split } = req.body || {};
+    const p = Number(split?.protein);
+    const f = Number(split?.fats);
+    const c = Number(split?.carbs);
+
+    if (![p, f, c].every((v) => Number.isFinite(v) && v >= 0)) {
+      return res.status(400).json({ error: 'Проценты БЖУ должны быть числами' });
+    }
+    if (p + f + c !== 100) {
+      return res.status(400).json({ error: 'Сумма БЖУ должна быть 100%' });
+    }
+
+    const row = await loadProfile(user.id);
+    if (!row) return res.status(404).json({ error: 'Сначала заполните профиль' });
+
+    const goals = goalsFromSplit(
+      Number(kcal) || Number(row.target_kcal) || 2000,
+      { protein: p, fats: f, carbs: c },
+      'manual'
+    );
+
+    const { data, error } = await getSupabase()
+      .from('users_profile')
+      .update({
+        target_kcal: goals.kcal,
+        split_protein: goals.split.protein,
+        split_fats: goals.split.fats,
+        split_carbs: goals.split.carbs,
+        split_source: 'manual',
+      })
+      .eq('telegram_id', user.id)
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, goals: goalsFromRow(data) });
+  } catch (err) {
+    console.error('goals: не удалось сохранить раскладку БЖУ', {
+      message: err.message, detail: err.details || err.hint || null, code: err.code || null,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ---------- Замеры ---------- */
+
+/** GET /api/metrics — история замеров */
+app.get('/api/metrics', async (req, res) => {
+  try {
+    const initData = req.get('x-telegram-init-data') || req.query.initData || '';
+    let user = verifyInitData(initData);
+    if (!user && CONFIG.allowDevAuth && req.query.telegramId) {
+      const id = Number(req.query.telegramId);
+      if (Number.isInteger(id) && id > 0) user = { id };
+    }
+    if (!user) return res.status(401).json({ error: 'Нет достоверной авторизации Telegram' });
+
+    const { data, error } = await getSupabase()
+      .from('body_metrics')
+      .select('*')
+      .eq('telegram_id', user.id)
+      .order('date', { ascending: true });
+
+    if (error) throw new Error(error.message);
+
+    res.json({
+      ok: true,
+      metrics: (data || []).map((m) => ({
+        date: m.date,
+        weight: Number(m.weight),
+        waist: Number(m.waist),
+        glutes: Number(m.glutes),
+        thigh: Number(m.thigh),
+      })),
+    });
+  } catch (err) {
+    console.error('metrics GET: не удалось прочитать замеры', {
+      message: err.message, detail: err.details || err.hint || null, code: err.code || null,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/**
+ * POST /api/metrics
+ * Тело: { date, weight, waist, glutes, thigh }
+ * Один замер на дату: повторная запись заменяет предыдущую.
+ */
+app.post('/api/metrics', async (req, res) => {
+  try {
+    const user = authenticate(req);
+    if (!user) return res.status(401).json({ error: 'Нет достоверной авторизации Telegram' });
+
+    const date = DATE_RE.test(String(req.body?.date || '')) ? String(req.body.date) : toISODate();
+    const values = ['weight', 'waist', 'glutes', 'thigh'].map((k) => Number(req.body?.[k]));
+    if (values.some((v) => !(v > 0))) {
+      return res.status(400).json({ error: 'Все замеры должны быть больше нуля' });
+    }
+
+    // Профиль должен существовать: на него ссылается внешний ключ
+    const profile = await loadProfile(user.id);
+    if (!profile) return res.status(409).json({ error: 'Сначала заполните профиль' });
+
+    const { data, error } = await getSupabase()
+      .from('body_metrics')
+      .upsert(
+        {
+          telegram_id: user.id,
+          date,
+          weight: values[0],
+          waist: values[1],
+          glutes: values[2],
+          thigh: values[3],
+        },
+        { onConflict: 'telegram_id,date' }
+      )
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, metric: data });
+  } catch (err) {
+    console.error('metrics POST: не удалось сохранить замер', {
+      message: err.message, detail: err.details || err.hint || null, code: err.code || null,
+      body: req.body,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ---------- Заметки ---------- */
+
+/** POST /api/notes — записать заметку дня */
+app.post('/api/notes', async (req, res) => {
+  try {
+    const user = authenticate(req);
+    if (!user) return res.status(401).json({ error: 'Нет достоверной авторизации Telegram' });
+
+    const date = DATE_RE.test(String(req.body?.date || '')) ? String(req.body.date) : toISODate();
+    const note = String(req.body?.note || '').trim().slice(0, 1000);
+    if (!note) return res.status(400).json({ error: 'Заметка пустая' });
+
+    const profile = await loadProfile(user.id);
+    if (!profile) return res.status(409).json({ error: 'Сначала заполните профиль' });
+
+    const { data, error } = await getSupabase()
+      .from('daily_notes')
+      .upsert({ telegram_id: user.id, date, note }, { onConflict: 'telegram_id,date' })
+      .select()
+      .single();
+
+    if (error) throw new Error(error.message);
+    res.json({ ok: true, note: data });
+  } catch (err) {
+    console.error('notes POST: не удалось сохранить заметку', {
+      message: err.message, detail: err.details || err.hint || null, code: err.code || null,
+    });
+    res.status(500).json({ error: err.message });
+  }
+});
+
+/* ---------- Удаление данных ---------- */
+
+/** DELETE /api/data — стирает профиль, приёмы, замеры и заметки пользователя */
+app.delete('/api/data', async (req, res) => {
+  try {
+    const user = authenticate(req);
+    if (!user) return res.status(401).json({ error: 'Нет достоверной авторизации Telegram' });
+
+    // Каскад по внешнему ключу удалит приёмы, замеры и заметки
+    const { error } = await getSupabase()
+      .from('users_profile')
+      .delete()
+      .eq('telegram_id', user.id);
+
+    if (error) throw new Error(error.message);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('data DELETE: не удалось удалить данные', {
+      message: err.message, detail: err.details || err.hint || null, code: err.code || null,
+    });
     res.status(500).json({ error: err.message });
   }
 });
