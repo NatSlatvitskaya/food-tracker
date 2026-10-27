@@ -532,6 +532,9 @@ function sumDay(meals) {
    7. EXPRESS
    ========================================================= */
 
+/** Состояние бота: видно в /health и при диагностике на хостинге */
+const BOT_STATE = { running: false, username: '', startedAt: null, lastError: '' };
+
 const app = express();
 app.disable('x-powered-by');
 
@@ -562,8 +565,22 @@ app.use((req, res, next) => {
   next();
 });
 
+/**
+ * Проверка живости для Render.
+ * /status отвечает простым текстом — его удобно ставить в Health Check Path.
+ * /health отдаёт подробности: модель, состояние бота, время.
+ */
+app.get('/status', (req, res) => res.type('text/plain').send('OK'));
+
 app.get('/health', (req, res) => {
-  res.json({ ok: true, model: CONFIG.model, time: new Date().toISOString() });
+  res.json({
+    ok: true,
+    model: CONFIG.model,
+    bot: BOT_STATE.running ? 'polling' : 'idle',
+    botUsername: BOT_STATE.username || null,
+    uptimeSec: Math.round(process.uptime()),
+    time: new Date().toISOString(),
+  });
 });
 
 /**
@@ -770,16 +787,66 @@ async function main() {
 
   const bot = buildBot();
 
+  /*
+    ВАЖНО про bot.launch().
+
+    launch() возвращает Promise, который резолвится НЕ при старте, а при
+    остановке бота. Поэтому конструкция
+
+        bot.launch().then(() => console.log('Бот слушает'))
+
+    напечатает сообщение только после остановки, а при сбое опроса ошибка
+    уйдёт в необработанный reject. Правильно — передать колбэк вторым
+    аргументом: он вызывается ровно тогда, когда опрос запустился.
+
+    Ещё два условия живого опроса:
+      • у бота не должно быть установленного webhook (иначе 409 Conflict);
+      • токен должен быть валиден (иначе 401 Unauthorized).
+    Обе проверки делаем явно, до старта опроса.
+  */
   try {
+    const me = await bot.telegram.getMe();
+    BOT_STATE.username = me.username || '';
+
+    console.log('Бот: @' + (me.username || 'без имени') + ' (id ' + me.id + ')');
+
+    // Остатки webhook от прошлых деплоев блокируют опрос
+    await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'Начать и открыть трекер' },
       { command: 'app', description: 'Открыть трекер' },
     ]);
-    // launch не блокирует: HTTP продолжает работать независимо от бота
-    bot.launch({ dropPendingUpdates: true });
-    console.log('Бот запущен');
+
+    const launched = bot.launch({ dropPendingUpdates: true }, () => {
+      BOT_STATE.running = true;
+      BOT_STATE.startedAt = new Date();
+      console.log('Телеграм бот успешно слушает команды!');
+    });
+
+    // launch резолвится при остановке — ловим именно ошибки старта и опроса
+    launched.catch((err) => {
+      BOT_STATE.running = false;
+      BOT_STATE.lastError = err.message;
+      console.error('Опрос Telegram остановился:', err.message);
+
+      if (err.response?.error_code === 401) {
+        console.error('Токен отклонён. Проверьте TELEGRAM_BOT_TOKEN в переменных Render.');
+      } else if (err.response?.error_code === 409) {
+        console.error('Webhook всё ещё активен. Удалите его: deleteWebhook в @BotFather или повторно задеплойте.');
+      }
+      // Без бота сервис бесполезен: Render перезапустит контейнер
+      process.exit(1);
+    });
+
+    console.log('Запуск опроса Telegram…');
   } catch (err) {
+    BOT_STATE.lastError = err.message;
     console.error('Бот не запустился:', err.message);
+    if (err.response?.error_code === 401) {
+      console.error('Токен отклонён. Проверьте TELEGRAM_BOT_TOKEN в переменных Render.');
+    }
+    process.exit(1);
   }
 
   const shutdown = async (signal) => {
@@ -804,4 +871,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { app, buildBot, verifyInitData, mealCategoryFor, sumDay, normalizeMeal };
+module.exports = { app, main, buildBot, verifyInitData, mealCategoryFor, sumDay, normalizeMeal, BOT_STATE };
