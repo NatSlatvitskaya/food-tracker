@@ -36,13 +36,14 @@
         </div>
 
         <div class="form-group">
-          <label for="hips">Объем бедер (см)</label>
-          <input type="number" id="hips" name="hips" step="0.1" min="30" required>
+          <label for="glutes">Объем ягодиц (см)</label>
+          <input type="number" id="glutes" name="glutes" step="0.1" min="30" required>
         </div>
 
         <div class="form-group">
-          <label for="glutes">Объем ягодиц (см)</label>
-          <input type="number" id="glutes" name="glutes" step="0.1" min="30" required>
+          <label for="thigh">Объем бедра одной ноги (см)</label>
+          <input type="number" id="thigh" name="thigh" step="0.1" min="20" required>
+          <p class="form-hint">Верхняя треть ноги, сразу под ягодичной складкой.</p>
         </div>
 
         <div class="form-group">
@@ -263,15 +264,15 @@
         </div>
 
         <div class="metric-card">
-          <h4>Бедра</h4>
-          <p class="metric-value" id="metric-hips">—</p>
-          <time class="metric-date" id="metric-hips-date">Нет данных</time>
-        </div>
-
-        <div class="metric-card">
           <h4>Ягодицы</h4>
           <p class="metric-value" id="metric-glutes">—</p>
           <time class="metric-date" id="metric-glutes-date">Нет данных</time>
+        </div>
+
+        <div class="metric-card">
+          <h4>Бедро (одной ноги)</h4>
+          <p class="metric-value" id="metric-thigh">—</p>
+          <time class="metric-date" id="metric-thigh-date">Нет данных</time>
         </div>
       </div>
 
@@ -478,12 +479,12 @@
           <input type="number" id="new-waist" name="new-waist" step="0.1" min="30" required>
         </div>
         <div class="form-group">
-          <label for="new-hips">Бедра (см)</label>
-          <input type="number" id="new-hips" name="new-hips" step="0.1" min="30" required>
-        </div>
-        <div class="form-group">
           <label for="new-glutes">Ягодицы (см)</label>
           <input type="number" id="new-glutes" name="new-glutes" step="0.1" min="30" required>
+        </div>
+        <div class="form-group">
+          <label for="new-thigh">Бедро одной ноги (см)</label>
+          <input type="number" id="new-thigh" name="new-thigh" step="0.1" min="20" required>
         </div>
         <button type="submit" class="btn-primary">Сохранить замеры</button>
       </form>
